@@ -5,7 +5,7 @@ This backlog tracks local Ollama models tested for `llama-codex` agentic coding.
 ## Standard Benchmark
 
 Fixture:
-- Work from a fresh copy of `models-tesitng-sandbox/base`.
+- Work from a fresh copy of `models-testing-sandbox/base`.
 - Implement `api.py` using only the Python standard library.
 - Preserve the expected `create_app()` library entry point.
 - Run exactly: `python3 -m unittest discover -s tests -v`.
@@ -22,9 +22,9 @@ Pass criteria:
 
 | Tier | Fixture | Purpose | Status |
 | --- | --- | --- | --- |
-| Easy | `models-tesitng-sandbox/benchmarks/easy-api` | Single-file stdlib HTTP API with validation and route handling | Ready |
-| Medium | `models-tesitng-sandbox/benchmarks/medium-task-library` | Multi-file package with domain model, service layer, filters, and JSON persistence | Ready |
-| Hard | `models-tesitng-sandbox/benchmarks/hard-note-service` | SQLite-backed note service with import/export, search, and HTTP routes | Ready |
+| Easy | `models-testing-sandbox/benchmarks/easy-api` | Single-file stdlib HTTP API with validation and route handling | Ready |
+| Medium | `models-testing-sandbox/benchmarks/medium-task-library` | Multi-file package with domain model, service layer, filters, and JSON persistence | Ready |
+| Hard | `models-testing-sandbox/benchmarks/hard-note-service` | SQLite-backed note service with import/export, search, and HTTP routes | Ready |
 
 ## Tested Models
 

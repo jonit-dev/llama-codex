@@ -3,15 +3,15 @@
 ## Local Model Testing
 
 - Store tested model results in `local-model-test-backlog.md`.
-- Use `models-tesitng-sandbox/` for repeatable benchmark fixtures and run copies.
+- Use `models-testing-sandbox/` for repeatable benchmark fixtures and run copies.
 - Treat 64k as the minimum advertised context window for `llama-codex` usability, but verify the actual loaded Ollama context with `ollama ps`.
 - Test one model at a time. Stop or unload unrelated Ollama models before running a benchmark to avoid memory pressure and mixed results.
-- Always start from a fresh fixture copy under `models-tesitng-sandbox/runs/<model>-<tier>/`. Do not judge a model from a reused or partially edited run directory.
+- Always start from a fresh fixture copy under `models-testing-sandbox/runs/<model>-<tier>/`. Do not judge a model from a reused or partially edited run directory.
 - Run a direct exact-response sanity check before an agentic benchmark. A model that cannot answer a trivial exact `ok` prompt is not ready for coding-agent testing.
 - Use the tiered fixtures consistently:
-  - Easy: `models-tesitng-sandbox/benchmarks/easy-api`
-  - Medium: `models-tesitng-sandbox/benchmarks/medium-task-library`
-  - Hard: `models-tesitng-sandbox/benchmarks/hard-note-service`
+  - Easy: `models-testing-sandbox/benchmarks/easy-api`
+  - Medium: `models-testing-sandbox/benchmarks/medium-task-library`
+  - Hard: `models-testing-sandbox/benchmarks/hard-note-service`
 - For each benchmark, require the model to edit files, run `python3 -m unittest discover -s tests -v`, and stop only when tests pass or a clear failure mode appears.
 - Independently rerun the test command from the run directory before recording a pass.
 - Record the full model tag, requested context, actual loaded context, direct sanity result, tool-call behavior, edit/test behavior, final test result, and decision.
