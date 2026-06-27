@@ -147,6 +147,8 @@ llama-codex --llama-context 8192 --yolo
 
 `llama-codex` defaults to a lean tool profile for local models. Lean mode keeps core coding tools available while hiding bulky non-coding tools such as MCP/resource discovery, plugin installation, planning UI, image inspection, and goal-management helpers.
 
+The wrapper also adds short local-agent steering instructions through the model catalog. They bias the model toward reading relevant files, making targeted edits, using complete test output for conclusions, repairing failures minimally, and reporting the exact verification command. Override them with `LLAMA_CODEX_BASE_INSTRUCTIONS` if a model needs different behavior.
+
 Use a different tool profile when needed:
 
 ```sh

@@ -37,6 +37,28 @@ pid_file="${cache_dir}/proxy-${proxy_port}.pid"
 model_catalog="${cache_dir}/model-${proxy_port}.json"
 ollama_num_parallel="${LLAMA_CODEX_OLLAMA_NUM_PARALLEL:-${OLLAMA_NUM_PARALLEL:-1}}"
 ollama_max_loaded_models="${LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS:-${OLLAMA_MAX_LOADED_MODELS:-1}}"
+default_base_instructions="$(cat <<'EOF'
+You are running inside Codex as a local coding agent.
+
+Operate mechanically:
+- Read the task and relevant files before editing.
+- Prefer targeted edits over rewriting large files.
+- Do not create placeholder files with touch.
+- Do not rely on truncated command output for final conclusions.
+- Run the smallest relevant test first, then broader tests when needed.
+- If a test fails, inspect the failure and make the minimal repair.
+- Keep planning brief; edit files and verify.
+- Avoid MCP, plugin, image, browser, cloud, and external tools unless explicitly required.
+- Stop when tests pass and report the exact verification command.
+EOF
+)"
+if [[ -v LLAMA_CODEX_BASE_INSTRUCTIONS ]]; then
+  base_instructions="${LLAMA_CODEX_BASE_INSTRUCTIONS}"
+  base_instructions_source="env"
+else
+  base_instructions="${default_base_instructions}"
+  base_instructions_source="default"
+fi
 fat_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool|list_available_plugins_to_install|request_plugin_install|request_user_input|update_plan|view_image|get_goal|create_goal|update_goal|parallel)$'
 tiny_deny_tool_pattern='^(?!(?:.*\.)?exec_command$).+'
 tool_profile="${LLAMA_CODEX_TOOL_PROFILE:-lean}"
@@ -150,6 +172,7 @@ while (($#)); do
       echo "ollama_max_loaded_models=${ollama_max_loaded_models}"
       echo "tool_profile=${tool_profile}"
       echo "deny_tool_pattern=${deny_tool_pattern}"
+      echo "base_instructions_source=${base_instructions_source}"
       echo "env_file=${env_file}"
       echo "model_catalog=${model_catalog}"
       exit 0
@@ -208,6 +231,7 @@ Environment:
   LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS
   LLAMA_CODEX_TOOL_PROFILE       Defaults to lean.
   LLAMA_CODEX_DENY_TOOL_PATTERN
+  LLAMA_CODEX_BASE_INSTRUCTIONS  Overrides default local-agent steering.
   LLAMA_CODEX_LOG_DIR
   LLAMA_CODEX_CACHE_DIR
 EOF
@@ -439,15 +463,15 @@ kill_proxy_on_port() {
 
 write_model_catalog() {
   mkdir -p "${cache_dir}"
-  python3 - "$model" "$context_window" "$model_catalog" <<'PY'
+  python3 - "$model" "$context_window" "$model_catalog" "$base_instructions" <<'PY'
 import json
 import sys
 
-model, context_window, path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+model, context_window, path, base_instructions = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 data = {
     "models": [
         {
-            "base_instructions": "",
+            "base_instructions": base_instructions,
             "context_window": context_window,
             "default_verbosity": "low",
             "display_name": model,
