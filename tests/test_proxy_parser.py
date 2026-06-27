@@ -135,6 +135,109 @@ def test_rewrites_cat_heredoc_to_apply_patch():
     assert "cat >" not in data["cmd"]
 
 
+def test_rewrites_cat_heredoc_with_redirect_after_delimiter():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "cat <<'EOF' > ledger/store.py\nclass LedgerStore:\n    pass\nEOF"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "*** Add File: ledger/store.py" in data["cmd"]
+    assert "+class LedgerStore:" in data["cmd"]
+    assert "cat <<" not in data["cmd"]
+
+
+def test_rejected_shell_write_reports_original_command():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "printf 'x' > ledger/store.py"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "proxy rejected this edit command" in data["cmd"]
+    assert "printf" in data["cmd"]
+    assert "ledger/store.py" in data["cmd"]
+
+
+def test_rewrites_echo_redirect_to_apply_patch():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps(
+            {
+                "cmd": "echo 'from .store import LedgerStore\nfrom .server import create_app' > ledger/__init__.py"
+            }
+        ),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "*** Add File: ledger/__init__.py" in data["cmd"]
+    assert "+from .store import LedgerStore" in data["cmd"]
+    assert "+from .server import create_app" in data["cmd"]
+    assert "echo" not in data["cmd"]
+
+
+def test_unwraps_nested_exec_command_shell_text():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": 'exec_command("exec_command", {"cmd": "ls -la", "workdir": "/tmp"})'}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert data["cmd"] == "ls -la"
+    assert data["workdir"] == "/tmp"
+
+
+def test_unwrapped_nested_exec_still_applies_shell_write_guard():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": 'exec_command("exec_command", {"cmd": "echo ok > a.txt"})'}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "*** Add File: a.txt" in data["cmd"]
+    assert "+ok" in data["cmd"]
+
+
+def test_rewrites_apply_patch_file_patch_flags_when_payload_is_real_patch():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps(
+            {
+                "cmd": "apply_patch --file ignored.js --patch '*** Begin Patch\n*** Update File: src/planner.js\n@@\n-old\n+new\n*** End Patch'"
+            }
+        ),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "llama-codex apply_patch compatibility" in data["cmd"]
+    assert "*** Update File: src/planner.js" in data["cmd"]
+    assert "--file" not in data["cmd"]
+
+
+def test_rejects_apply_patch_file_patch_flags_with_non_patch_payload():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "apply_patch --file src/planner.js --patch 'const id = `a${newTrip.activities.length + 1}`;'"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "rejected malformed apply_patch command" in data["cmd"]
+    assert "does not accept --file or --patch flags" in data["cmd"]
+    assert "src/planner.js" in data["cmd"]
+
+
+def test_rejects_malformed_apply_patch_shell_command_with_guidance():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "apply_patch --file src/planner.js"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "rejected malformed apply_patch command" in data["cmd"]
+    assert "does not accept --file or --patch flags" in data["cmd"]
+    assert "src/planner.js" in data["cmd"]
+
+
 def test_translates_native_apply_patch_call_to_exec_command():
     response = {
         "output": [
@@ -276,6 +379,42 @@ def test_translates_nested_apply_patch_object():
     assert "*** Add File: a.txt" in data["cmd"]
 
 
+def test_translates_premature_prose_to_exec_diagnostic():
+    response = {
+        "id": "resp-test",
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "The problem is the ID generation. Let me fix the implementation:",
+                    }
+                ],
+            }
+        ],
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    item = translated["output"][0]
+    assert item["type"] == "function_call"
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "rejected premature prose-only response" in data["cmd"]
+
+
+def test_does_not_translate_completion_prose_to_exec_diagnostic():
+    response = {
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Done. All tests pass."}],
+            }
+        ],
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    assert translated["output"][0]["type"] == "message"
+
+
 if __name__ == "__main__":
     test_parse_qwen_tool_call_suffix()
     test_ignores_disallowed_tool()
@@ -290,6 +429,14 @@ if __name__ == "__main__":
     test_rewrites_touch_to_apply_patch()
     test_rewritten_touch_rejects_top_level_module_shadowing_package()
     test_rewrites_cat_heredoc_to_apply_patch()
+    test_rewrites_cat_heredoc_with_redirect_after_delimiter()
+    test_rejected_shell_write_reports_original_command()
+    test_rewrites_echo_redirect_to_apply_patch()
+    test_unwraps_nested_exec_command_shell_text()
+    test_unwrapped_nested_exec_still_applies_shell_write_guard()
+    test_rewrites_apply_patch_file_patch_flags_when_payload_is_real_patch()
+    test_rejects_apply_patch_file_patch_flags_with_non_patch_payload()
+    test_rejects_malformed_apply_patch_shell_command_with_guidance()
     test_translates_native_apply_patch_call_to_exec_command()
     test_translates_text_apply_patch_call_to_exec_command()
     test_translates_custom_apply_patch_input_to_exec_command()
@@ -297,4 +444,6 @@ if __name__ == "__main__":
     test_repairs_shorthand_apply_patch_header()
     test_shorthand_patch_rejects_top_level_module_shadowing_package()
     test_translates_nested_apply_patch_object()
+    test_translates_premature_prose_to_exec_diagnostic()
+    test_does_not_translate_completion_prose_to_exec_diagnostic()
     print("proxy parser tests passed")

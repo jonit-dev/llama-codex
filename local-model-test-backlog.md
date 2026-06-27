@@ -57,6 +57,15 @@ Pass criteria:
 
 Reproduction note from 2026-06-27: after adding stricter local edit shims, output caps, and shell-write rejection, fresh hard note-service reruns did not consistently reproduce the historical pass. `model_reasoning_effort=low` improved tool cadence, but Qwen still emitted placeholder file creation, malformed patch headers, shell-write attempts, and a top-level module that shadowed an existing package. The patched proxy now catches or repairs those cases, but the hard rerun still cycled without implementing the package files. Treat the historical pass as evidence that this model can do the task, not as evidence that `llama-codex` is currently more reliable than `aider diff-fenced`.
 
+Update from the same date: the `llama-codex` harness now has a verification
+retry loop with workspace-change detection and a proxy guard for premature
+prose-only responses. In the UI trip-planner repair benchmark, Qwen first
+stopped after saying it would fix the implementation; the proxy converted that
+into a failing `exec_command` diagnostic, Codex stayed in-session, Qwen emitted
+a valid patch, and `npm test` passed. This materially improves reliability for
+the "stops out of nowhere" failure mode, but more varied project runs are still
+needed before promoting `llama-codex` over `aider diff-fenced`.
+
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
 ## Cleanup Findings

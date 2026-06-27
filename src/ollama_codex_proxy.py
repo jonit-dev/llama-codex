@@ -327,11 +327,17 @@ def unquote_shell_word(value):
 
 
 def rewrite_cat_heredoc(cmd):
-    match = re.match(
-        r"\s*cat\s*>\s*(?P<path>(?:'[^']+'|\"[^\"]+\"|[^\s]+))\s*<<\s*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_-]*)\2\s*\n(?P<body>.*)\n(?P=delimiter)\s*;?\s*$",
-        cmd,
-        re.DOTALL,
+    path_first = (
+        r"\s*cat\s*>\s*(?P<path>(?:'[^']+'|\"[^\"]+\"|[^\s]+))"
+        r"\s*<<\s*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_-]*)\2"
+        r"\s*\n(?P<body>.*)\n(?P=delimiter)\s*;?\s*$"
     )
+    heredoc_first = (
+        r"\s*cat\s*<<\s*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_-]*)\1"
+        r"\s*>\s*(?P<path>(?:'[^']+'|\"[^\"]+\"|[^\s]+))"
+        r"\s*\n(?P<body>.*)\n(?P=delimiter)\s*;?\s*$"
+    )
+    match = re.match(path_first, cmd, re.DOTALL) or re.match(heredoc_first, cmd, re.DOTALL)
     if not match:
         return None
     path = unquote_shell_word(match.group("path"))
@@ -383,8 +389,77 @@ def rewrite_touch(cmd):
     return "\n".join(commands)
 
 
+def rewrite_echo_redirect(cmd):
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return None
+    if len(parts) != 4 or parts[0] != "echo" or parts[2] != ">":
+        return None
+    if parts[1].startswith("-"):
+        return None
+    return conditional_apply_patch_command(parts[3], parts[1])
+
+
+def malformed_apply_patch_command(cmd):
+    message = (
+        "llama-codex proxy rejected malformed apply_patch command: use a heredoc like "
+        "apply_patch <<'PATCH' ... PATCH; apply_patch does not accept --file or --patch flags."
+    )
+    rejected = f"llama-codex proxy rejected edit command: {cmd}"
+    return (
+        "printf '%s\\n' "
+        f"{shlex.quote(message)} "
+        f"{shlex.quote(rejected)} "
+        ">&2; exit 2"
+    )
+
+
+def rewrite_apply_patch_shell_command(cmd):
+    stripped = cmd.lstrip()
+    if not stripped.startswith("apply_patch"):
+        return None
+    if re.match(r"^\s*apply_patch\s*(?:<<|<)\s*", cmd):
+        return None
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return malformed_apply_patch_command(cmd)
+    if not parts or parts[0] != "apply_patch":
+        return None
+    if len(parts) == 1:
+        return malformed_apply_patch_command(cmd)
+    if "--file" in parts or "--patch" in parts:
+        try:
+            path = parts[parts.index("--file") + 1]
+            patch_or_content = parts[parts.index("--patch") + 1]
+        except (ValueError, IndexError):
+            return malformed_apply_patch_command(cmd)
+        if is_patch_text(patch_or_content):
+            return apply_patch_compat_command(patch_or_content)
+        return malformed_apply_patch_command(cmd)
+    if len(parts) == 2 and is_patch_text(parts[1]):
+        return apply_patch_compat_command(parts[1])
+    return malformed_apply_patch_command(cmd)
+
+
 def rewrite_shell_write_command(cmd):
-    return rewrite_cat_heredoc(cmd) or rewrite_touch(cmd)
+    return rewrite_cat_heredoc(cmd) or rewrite_echo_redirect(cmd) or rewrite_touch(cmd)
+
+
+def extract_nested_exec_arguments(cmd):
+    if not re.match(r"\s*(?:exec_command|[\w.]+\.exec_command)\s*\(", cmd):
+        return None
+    json_start = cmd.find("{")
+    if json_start < 0:
+        return None
+    try:
+        data, _ = json.JSONDecoder().raw_decode(cmd[json_start:])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("cmd"), str):
+        return None
+    return data
 
 
 def apply_exec_guard(name, arguments, reject_shell_writes):
@@ -401,10 +476,20 @@ def apply_exec_guard(name, arguments, reject_shell_writes):
     cmd = data.get("cmd")
     if not isinstance(cmd, str):
         return arguments
+    changed = False
+    nested = extract_nested_exec_arguments(cmd)
+    if nested is not None:
+        data.update(nested)
+        cmd = data["cmd"]
+        changed = True
     stripped = cmd.lstrip()
     if "llama-codex apply_patch compatibility" in cmd:
         return arguments
     if stripped.startswith("apply_patch"):
+        rewritten = rewrite_apply_patch_shell_command(cmd)
+        if rewritten:
+            data["cmd"] = rewritten
+            return json.dumps(data)
         return arguments
     rewritten = rewrite_shell_write_command(cmd)
     if rewritten:
@@ -414,6 +499,7 @@ def apply_exec_guard(name, arguments, reject_shell_writes):
     forbidden = re.compile(
         r"(^|[;&|]\s*)touch\b|"
         r"\bcat\s*>|"
+        r"\bcat\s*<<|"
         r"\btee\s+|"
         r"\bsed\s+-i\b|"
         r"\bperl\s+-i\b|"
@@ -422,13 +508,47 @@ def apply_exec_guard(name, arguments, reject_shell_writes):
         re.DOTALL,
     )
     if not forbidden.search(cmd):
+        if changed:
+            return json.dumps(data)
         return arguments
+    rejected = f"llama-codex proxy rejected edit command: {cmd}"
     data["cmd"] = (
         "printf '%s\\n' "
         "'llama-codex proxy rejected this edit command: use apply_patch for file creation/modification; do not use touch, cat >, tee, redirects, sed -i, perl -i, or Python file writes.' "
+        f"{shlex.quote(rejected)} "
         ">&2; exit 2"
     )
     return json.dumps(data)
+
+
+def premature_prose_command(text):
+    if not isinstance(text, str):
+        return None
+    normalized = " ".join(text.lower().split())
+    if not normalized:
+        return None
+    intent_patterns = (
+        "let me fix",
+        "i will fix",
+        "i'll fix",
+        "let me update",
+        "i will update",
+        "i'll update",
+        "let me patch",
+        "i will patch",
+        "i'll patch",
+        "the problem is",
+        "the issue is",
+    )
+    if not any(pattern in normalized for pattern in intent_patterns):
+        return None
+    if any(done in normalized for done in ("tests pass", "verification passed", "all tests pass", "done")):
+        return None
+    message = (
+        "llama-codex proxy rejected premature prose-only response: call exec_command with "
+        "apply_patch or a verification command instead of saying what you will do."
+    )
+    return f"printf '%s\\n' {shlex.quote(message)} >&2; exit 2"
 
 
 def normalize_model_text(text):
@@ -482,6 +602,19 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False)
         text = "".join(part.get("text", "") for part in content if part.get("type") == "output_text")
         parsed = parse_tool_text(text, set(allowed_names) | {"apply_patch"})
         if not parsed:
+            exec_name = next((candidate for candidate in allowed_names if candidate.rsplit(".", 1)[-1] == "exec_command"), None)
+            premature_command = premature_prose_command(text)
+            if exec_name and premature_command:
+                call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
+                output[index] = {
+                    "id": "fc_" + call_id.removeprefix("call_"),
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": exec_name,
+                    "arguments": json.dumps({"cmd": premature_command}),
+                }
+                return data
             continue
         name, arguments = parsed
         name, arguments = translate_apply_patch_call(name, arguments, allowed_names)
