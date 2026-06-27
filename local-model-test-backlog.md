@@ -41,19 +41,31 @@ Pass criteria:
 | Model | Note | Decision |
 | --- | --- | --- |
 | `qwen3-coder-30b-65k` alias for `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL` | Direct `/api/generate` sanity passed. Medium benchmark passed after proxy parser fixes for mixed prose/JSON and XML-style tool calls. Hard note-service benchmark passed through `llama-codex` at real Ollama `CONTEXT 65536`: read requirements/tests/source files, implemented SQLite store plus HTTP server, ran tests, repaired tag ordering, and independently verified 3/3 hard tests passing. | Current best candidate and default model |
+| `qwen3-coder-next-tq1-65k` alias for `hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-TQ1_0` | Direct exact `ok` sanity passed and hard benchmark loaded at real Ollama `CONTEXT 65536`. The model used real `exec_command` tool calls, read tests and stubs, wrote SQLite store and HTTP server implementations, and ran tests. It then failed the hard repair loop: left `create_app` as an indented class/static method instead of the module-level function imported by `notes.__init__`, repeated server rewrites, made one malformed pseudo-parameter shell command, and independent verification failed at import time. | Hard-tier test-repair failure at `UD-TQ1_0`; do not judge higher quants from this result, but do not use this low quant as a replacement baseline |
+| `north-mini-code-65k` alias for `hf.co/unsloth/North-Mini-Code-1.0-GGUF:UD-Q4_K_M` | Pull and 65k alias creation succeeded. Direct `/api/generate` sanity failed: for the exact prompt `Reply exactly with the single token: ok`, it returned a fabricated HTTP response and HTML page. Actual loaded sanity context was `CONTEXT 32768`; it was unloaded after the failed gate. | Direct-following failure; do not run agentic hard benchmark unless intentionally bypassing the sanity gate |
+| `ornith-35b-65k` alias for `hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:Q4_K_M` | Pull and 65k alias creation succeeded. Direct `/api/generate` sanity failed: for the exact prompt `Reply exactly with the single token: ok`, it emitted a visible `<think>` block and then `ok`. Actual loaded sanity context was `CONTEXT 32768`; it was unloaded after the failed gate. | Direct-following failure; do not run agentic hard benchmark unless intentionally bypassing the sanity gate |
+| `qwopus36-27b-coder-mtp-65k` alias for `hf.co/Jackrong/Qwopus3.6-27B-Coder-MTP-GGUF:Q4_K_M` | Pull and 65k alias creation succeeded. Ollama modelfile uses a bare `{{ .Prompt }}` template. Direct `/api/generate` sanity failed: for the exact prompt `Reply exactly with the single token: ok`, it emitted a visible `<think>` block and then `ok`. Actual loaded sanity context was `CONTEXT 32768`; it was unloaded after the failed gate. | Direct-following failure; do not run agentic hard benchmark unless intentionally bypassing the sanity gate |
+| `qwopus36-27b-coder-compat-mtp-65k` alias for `hf.co/Jackrong/Qwopus3.6-27B-Coder-Compat-MTP-GGUF:Q4_K_M` | Pull and 65k alias creation succeeded. Ollama modelfile uses the same bare `{{ .Prompt }}` template shape as the main MTP variant. Direct `/api/generate` sanity failed with the same visible `<think>` block followed by `ok`. Actual loaded sanity context was `CONTEXT 32768`; it was unloaded after the failed gate. | Direct-following failure; compatibility variant does not fix the template/visible-thinking behavior |
 | `hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q4_K_M` | Direct `/api/generate` sanity passed, but `llama-codex` proxy run failed before generation with Ollama template HTTP 500: conversation roles must alternate. | Blocked by proxy/template compatibility; revisit only if stronger candidates fail |
 | `hf.co/Mungert/SWE-agent-LM-32B-GGUF:Q4_K_M` | Direct sanity passed and parser patch fixed its mixed prose/JSON tool call, but it loaded at 28 GB with CPU spill and was too slow for practical use. | Deleted; too slow on this machine |
 | `hf.co/unsloth/rnj-1-instruct-GGUF:Q4_K_M` | Direct `/api/generate` sanity passed. Medium benchmark made real progress: read tests, ran failing baseline, wrote an implementation, and reached 3/4 passing tests. It then looped on the remaining invalid-status failure without diagnosing that `list_tasks(status="blocked")` needed `ValueError`. | Near miss on medium; better than Ornith, but not a pass |
 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-GGUF:Q4_K_M` | Pulled after a long download but was not tested because Qwen3-Coder passed medium first. | Deleted during cleanup |
 
+## Current Default / Baseline
+
+`qwen3-coder-30b-65k` is the current default and baseline. It aliases `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL`, has passed the medium benchmark, and has passed the hard note-service benchmark with real tool use, file edits, test execution, repair, and independent verification at actual Ollama `CONTEXT 65536`.
+
+New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
+
 ## Current Queue
 
 | Priority | Model | Purpose | Status |
 | ---: | --- | --- | --- |
-| 1 | `hf.co/Mungert/SWE-agent-LM-32B-GGUF:Q4_K_M` | SWE-agent tuned larger candidate | Deleted; too slow |
-| 2 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-GGUF:Q4_K_M` | Closest Claude-like coding candidate | Deleted untested after Qwen3-Coder passed |
-| 3 | `hf.co/unsloth/rnj-1-instruct-GGUF:Q4_K_M` | Fast, cheap agentic sanity check | Tested; medium near miss |
-| 4 | `hf.co/raicoon2k/Qwen3.5-9B-MTP-SWE-Agent-GGUF:Q4_K_M` | Small SWE-agent tuned Qwen variant | Queued |
+| 1 | `hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_M` | Qwen coding-agent successor with 256k advertised context and explicit tool-use focus | Deferred; `UD-TQ1_0` failed hard repair, so only a higher-quant hard pass can justify replacing the baseline |
+| 2 | `hf.co/unsloth/North-Mini-Code-1.0-GGUF:UD-Q4_K_M` | 30B-A3B code model trained for agentic software engineering, terminal tasks, and tool use | Failed direct exact-response sanity via `north-mini-code-65k`; do not use for coding-agent tests |
+| 3 | `hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:Q4_K_M` | Larger Ornith agentic-coding release with reported tool-call and SWE-bench strength | Failed direct exact-response sanity via `ornith-35b-65k`; worse gate behavior than Ornith 9B |
+| 4 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-MTP-GGUF:Q4_K_M` | 27B dense agentic coder with tool-use/function-calling training | Failed direct exact-response sanity via `qwopus36-27b-coder-mtp-65k`; do not use for coding-agent tests |
+| 5 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-Compat-MTP-GGUF:Q4_K_M` | Compatibility variant of Qwopus3.6 27B coder for template/tool-call fallback | Failed direct exact-response sanity via `qwopus36-27b-coder-compat-mtp-65k`; fallback did not improve behavior |
 
 ## Testing Notes
 
@@ -61,7 +73,7 @@ Pass criteria:
 - A model that only prints plans or pseudo tool calls fails the agent benchmark.
 - A model that reads a PRD, restates the task, and stops before inspecting or editing files fails PRD execution. Default steering now explicitly tells the model not to stop after restating a PRD and to begin the first concrete implementation or test slice.
 - Default steering includes compact-action rules inspired by the caveman skill's useful behavioral constraints: avoid filler, avoid obvious tool-use narration, avoid task restatement, quote concise errors, and report only changes, verification, and risks at completion.
-- A model that can call tools but cannot inspect and repair test failures is not good enough for the first goal.
+- A model that can call tools but cannot pass the hard benchmark through inspect/edit/test/repair is not good enough for the first goal.
 - Keep one model loaded at a time. Use the `qwen3-coder-30b-65k` alias as the current baseline; use 32k only when testing smaller or unknown candidates to reduce memory pressure.
 - The default lean tool profile hides bulky non-coding tools and `write_stdin`; repeated Qwen3-Coder harder runs called `write_stdin` with bogus session IDs, causing `Unknown process id` tool-routing errors. Use `--llama-tools standard` only when interactive/long-running command sessions are required, `--llama-tools full` only when testing whether a hidden integration tool is required, and `--llama-tools tiny` only for strict command-execution benchmarks.
 - The wrapper advertises the configured context window to the CLI, but the proxy does not yet force Ollama `num_ctx`; confirm actual loaded context with `ollama ps`.

@@ -25,9 +25,10 @@ A model should not be treated as a serious `llama-codex` candidate unless it mee
    - Must read failures and repair the cause, not repeat the same edit.
    - Must stop only after tests pass or after a clear, classifiable blocker.
 
-5. **Medium-tier competence**
+5. **Hard-tier competence**
    - Easy-tier success is not enough.
-   - A useful coding-agent model must pass the medium task-library benchmark, because it exercises multi-file coordination, domain modeling, validation, filtering, persistence, and test repair.
+   - Medium-tier success is not enough.
+   - A useful coding-agent model must pass the hard note-service benchmark, because it exercises multi-file coordination, SQLite persistence, import/export, HTTP routing, search, validation, API-shape compatibility, and test repair.
 
 6. **Practical runtime**
    - Must run without CPU spill or severe memory pressure on the target machine.
@@ -36,23 +37,23 @@ A model should not be treated as a serious `llama-codex` candidate unless it mee
 
 ## Benchmark Gate
 
-Use this sequence before spending time on hard benchmarks:
+Use this sequence for every serious candidate:
 
 1. Pull or create the model alias.
 2. Confirm only one model is loaded.
 3. Run direct exact-response sanity.
 4. Confirm actual loaded context with `ollama ps`.
-5. Run the medium benchmark from a fresh copy:
+5. Run the hard benchmark from a fresh copy:
 
 ```sh
-models-testing-sandbox/benchmarks/medium-task-library
+models-testing-sandbox/benchmarks/hard-note-service
 python3 -m unittest discover -s tests -v
 ```
 
 6. Independently rerun the test command from the run directory.
 7. Record the model tag, requested context, actual context, tool behavior, edit behavior, test behavior, and final decision.
 
-Do not move to hard unless medium passes independently.
+The medium benchmark is useful for debugging a wrapper or a very small model, but it is not the acceptance gate for a coding-agent model.
 
 ## Failure Patterns Seen So Far
 
@@ -74,7 +75,7 @@ Weak models may make real edits but introduce syntax errors, missing imports, in
 
 ### Test-Repair Failure
 
-The most important failure class is a model that can inspect, edit, and run tests but cannot use the traceback to fix the right cause. The Qwen3.5 9B SWE-agent run is the current example: it read the medium tests, edited files, ran tests, then repeatedly failed to repair simple `NameError` and state-management issues correctly.
+The most important failure class is a model that can inspect, edit, and run tests but cannot use the traceback to fix the right cause. The Qwen3.5 9B SWE-agent run failed this on the medium benchmark. The Qwen3-Coder-Next `UD-TQ1_0` run failed it on the hard benchmark by repeatedly missing that `create_app` needed to be a module-level function exported by `notes.server`.
 
 ## Model Size Guidance
 
@@ -82,10 +83,10 @@ Small agent-tuned models are not automatically useful. A 7B-10B model may call t
 
 Current practical expectations:
 
-- **7B-10B:** Only useful as cheap baselines unless they pass medium. Do not assume SWE-agent tuning is enough.
+- **7B-10B:** Only useful as cheap baselines unless they pass hard. Do not assume SWE-agent tuning is enough.
 - **14B-24B:** Worth testing only if direct sanity and tool calls are clean.
 - **30B-40B or efficient MoE:** Current sweet spot for this machine if the model loads mostly on GPU and supports 64k context.
-- **Very large MoE at low quant:** Worth exploring, but low quantization may erase the reasoning gains. Require medium pass before spending hard-tier time.
+- **Very large MoE at low quant:** Worth exploring, but low quantization may erase the reasoning gains. Require a hard pass before treating the model as a serious candidate.
 
 ## Current Baseline
 
@@ -100,4 +101,4 @@ Any new model should be compared against that behavior, not just against direct 
 - Do not retest a model unless the failure mode matches a wrapper/runtime fix.
 - Do not count easy-tier pass as enough for repo work.
 - Do not count a run as passed until an independent verification command succeeds.
-- Prefer one strong baseline model over a queue of small models that repeatedly fail medium.
+- Prefer one strong baseline model over a queue of models that repeatedly fail hard.
