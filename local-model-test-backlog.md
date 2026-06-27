@@ -59,6 +59,8 @@ Pass criteria:
 
 - Do not judge a model from chat quality alone. Record direct sanity, tool-call behavior, edit behavior, test behavior, and final test result.
 - A model that only prints plans or pseudo tool calls fails the agent benchmark.
+- A model that reads a PRD, restates the task, and stops before inspecting or editing files fails PRD execution. Default steering now explicitly tells the model not to stop after restating a PRD and to begin the first concrete implementation or test slice.
+- Default steering includes compact-action rules inspired by the caveman skill's useful behavioral constraints: avoid filler, avoid obvious tool-use narration, avoid task restatement, quote concise errors, and report only changes, verification, and risks at completion.
 - A model that can call tools but cannot inspect and repair test failures is not good enough for the first goal.
 - Keep one model loaded at a time. Use the `qwen3-coder-30b-65k` alias as the current baseline; use 32k only when testing smaller or unknown candidates to reduce memory pressure.
 - The default lean tool profile hides bulky non-coding tools and `write_stdin`; repeated Qwen3-Coder harder runs called `write_stdin` with bogus session IDs, causing `Unknown process id` tool-routing errors. Use `--llama-tools standard` only when interactive/long-running command sessions are required, `--llama-tools full` only when testing whether a hidden integration tool is required, and `--llama-tools tiny` only for strict command-execution benchmarks.

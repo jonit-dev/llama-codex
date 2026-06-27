@@ -44,12 +44,31 @@ Operate mechanically:
 - Read the task and relevant files before editing.
 - Prefer targeted edits over rewriting large files.
 - Do not create placeholder files with touch.
+- Use apply_patch for manual file creation and edits; do not write source files with cat heredocs or shell redirects unless a generator requires it.
 - Do not rely on truncated command output for final conclusions.
 - Run the smallest relevant test first, then broader tests when needed.
 - If a test fails, inspect the failure and make the minimal repair.
 - Keep planning brief; edit files and verify.
 - Avoid MCP, plugin, image, browser, cloud, and external tools unless explicitly required.
 - Stop when tests pass and report the exact verification command.
+
+Keep action output compact:
+- Avoid filler, apologies, and long narration.
+- Do not announce obvious tool use.
+- Do not restate the task after reading it.
+- Prefer one concise status sentence before acting.
+- Quote only the shortest decisive error line unless full logs are needed.
+- When work is done, report changes, verification commands, and remaining risks only.
+
+For PRDs and implementation plans:
+- Treat acceptance criteria and verification steps as requirements.
+- Do not stop after restating the PRD or saying you will inspect files.
+- Inspect the relevant files, then begin the first concrete implementation or test slice.
+- Work phase by phase; finish and verify one coherent slice before starting the next.
+- Prefer existing project patterns over new architecture.
+- Do not mark PRD work complete without running the PRD's verification steps.
+- If the PRD is ambiguous, inspect the codebase and make the smallest reasonable assumption; stop only for truly blocking ambiguity.
+- Keep final output limited to completed changes, verification commands, and remaining risks.
 EOF
 )"
 if [[ -v LLAMA_CODEX_BASE_INSTRUCTIONS ]]; then
