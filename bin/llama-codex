@@ -22,7 +22,9 @@ if [[ -f "${env_file}" ]]; then
   set +a
 fi
 
-default_model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL"
+qwen3_65k_alias="qwen3-coder-30b-65k"
+qwen3_65k_base_model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL"
+default_model="${qwen3_65k_alias}"
 model="${LLAMA_CODEX_MODEL:-${default_model}}"
 context_window="${LLAMA_CODEX_CONTEXT_WINDOW:-65536}"
 ollama_url="${LLAMA_CODEX_OLLAMA_URL:-http://127.0.0.1:11434}"
@@ -340,7 +342,61 @@ proxy_deny_tool_pattern() {
 }
 
 model_installed() {
-  ollama list 2>/dev/null | awk 'NR > 1 {print $1}' | grep -Fxq "${model}"
+  model_name_installed "${model}"
+}
+
+model_name_installed() {
+  local name="$1"
+  ollama list 2>/dev/null | awk 'NR > 1 {print $1}' | python3 -c 'import sys; name=sys.argv[1]; names={line.strip() for line in sys.stdin if line.strip()}; accepted={name}; accepted |= ({name + ":latest"} if ":" not in name else set()); raise SystemExit(0 if names & accepted else 1)' "$name"
+}
+
+create_qwen3_65k_alias() {
+  if model_name_installed "${qwen3_65k_alias}"; then
+    return 0
+  fi
+
+  if ! model_name_installed "${qwen3_65k_base_model}"; then
+    echo "pull base model: ${qwen3_65k_base_model}"
+    ollama pull "${qwen3_65k_base_model}"
+  fi
+
+  local modelfile
+  local blob_path
+  modelfile="${cache_dir}/qwen3-coder-30b-65k.Modelfile"
+  blob_path="$(ollama show "${qwen3_65k_base_model}" --modelfile | awk '/^FROM / {print $2; exit}')"
+  if [[ -z "${blob_path}" ]]; then
+    echo "llama-codex: could not resolve base model blob for ${qwen3_65k_base_model}" >&2
+    return 1
+  fi
+
+  mkdir -p "${cache_dir}"
+  cat >"${modelfile}" <<EOF
+FROM ${blob_path}
+PARAMETER num_ctx 65536
+PARAMETER min_p 0
+PARAMETER repeat_penalty 1.05
+PARAMETER top_k 20
+PARAMETER top_p 0.8
+PARAMETER temperature 0.7
+PARAMETER stop <|im_start|>
+PARAMETER stop <|im_end|>
+EOF
+
+  echo "create model alias: ${qwen3_65k_alias} (ctx 65536)"
+  ollama create "${qwen3_65k_alias}" -f "${modelfile}"
+}
+
+ensure_model_available() {
+  if model_installed; then
+    return 0
+  fi
+
+  if [[ "${model}" == "${qwen3_65k_alias}" ]]; then
+    create_qwen3_65k_alias
+    return $?
+  fi
+
+  return 1
 }
 
 start_ollama() {
@@ -474,7 +530,7 @@ doctor() {
     failed=1
   fi
 
-  if command_exists ollama && model_installed; then
+  if command_exists ollama && ensure_model_available; then
     echo "ok   model installed: ${model}"
   else
     echo "fail model installed: ${model}"
@@ -527,7 +583,7 @@ init() {
   fi
   echo "ok   ollama server: ${ollama_url}"
 
-  if model_installed; then
+  if ensure_model_available; then
     echo "ok   model already installed"
   else
     echo "pull model: ${model}"
@@ -571,7 +627,7 @@ if ! start_ollama; then
   exit 1
 fi
 
-if ! model_installed; then
+if ! ensure_model_available; then
   echo "llama-codex: model is not installed: ${model}" >&2
   echo "llama-codex: run first: llama-codex init" >&2
   exit 1

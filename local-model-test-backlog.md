@@ -40,7 +40,7 @@ Pass criteria:
 
 | Model | Note | Decision |
 | --- | --- | --- |
-| `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL` | Direct `/api/generate` sanity passed. Medium benchmark passed after proxy parser fixes for mixed prose/JSON and XML-style tool calls. It read requirements/tests/source files, edited three package files, ran tests, repaired a missing import, and independently verified 4/4 tests passing. Loaded at 21 GB with actual `CONTEXT 32768`. | Current best candidate and default model |
+| `qwen3-coder-30b-65k` alias for `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL` | Direct `/api/generate` sanity passed. Medium benchmark passed after proxy parser fixes for mixed prose/JSON and XML-style tool calls. Hard note-service benchmark passed through `llama-codex` at real Ollama `CONTEXT 65536`: read requirements/tests/source files, implemented SQLite store plus HTTP server, ran tests, repaired tag ordering, and independently verified 3/3 hard tests passing. | Current best candidate and default model |
 | `hf.co/unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF:Q4_K_M` | Direct `/api/generate` sanity passed, but `llama-codex` proxy run failed before generation with Ollama template HTTP 500: conversation roles must alternate. | Blocked by proxy/template compatibility; revisit only if stronger candidates fail |
 | `hf.co/Mungert/SWE-agent-LM-32B-GGUF:Q4_K_M` | Direct sanity passed and parser patch fixed its mixed prose/JSON tool call, but it loaded at 28 GB with CPU spill and was too slow for practical use. | Deleted; too slow on this machine |
 | `hf.co/unsloth/rnj-1-instruct-GGUF:Q4_K_M` | Direct `/api/generate` sanity passed. Medium benchmark made real progress: read tests, ran failing baseline, wrote an implementation, and reached 3/4 passing tests. It then looped on the remaining invalid-status failure without diagnosing that `list_tasks(status="blocked")` needed `ValueError`. | Near miss on medium; better than Ornith, but not a pass |
@@ -60,11 +60,11 @@ Pass criteria:
 - Do not judge a model from chat quality alone. Record direct sanity, tool-call behavior, edit behavior, test behavior, and final test result.
 - A model that only prints plans or pseudo tool calls fails the agent benchmark.
 - A model that can call tools but cannot inspect and repair test failures is not good enough for the first goal.
-- Keep one model loaded at a time. Use 32k context for first-pass testing unless the model passes and needs a larger-context follow-up.
+- Keep one model loaded at a time. Use the `qwen3-coder-30b-65k` alias as the current baseline; use 32k only when testing smaller or unknown candidates to reduce memory pressure.
 - The default lean tool profile hides bulky non-coding tools but keeps core coding tools available. Use `--llama-tools full` only when testing whether a hidden tool is required, and `--llama-tools tiny` only for strict command-execution benchmarks.
 - The wrapper advertises the configured context window to the CLI, but the proxy does not yet force Ollama `num_ctx`; confirm actual loaded context with `ollama ps`.
 - Proxy parser fixes changed the results materially: mixed prose followed by bare JSON tool calls and XML-style `<tool name="..." function="..."/>` calls now translate into real function calls. Retest previously failed models only when the failure mode was tool-call formatting, not weak implementation.
 - Ornith improved materially after hiding MCP/resource/plugin tools. A temporary stricter profile exposed only `exec_command`, but that may unfairly nerf coding runs because `write_stdin` is useful for long-running commands and interactive sessions.
 - Ornith medium failure looks primarily model-side after the tool-surface patch: proxy logs showed only `exec_command` was exposed and backend requests completed, while the model generated incomplete/broken code. Direct Ollama prompting on the same medium fixture also failed to produce a usable implementation.
-- `LLAMA_CODEX_CONTEXT_WINDOW=65536` improved the CLI-side budget, but an Ollama `/v1/responses` check still loaded Ornith with `CONTEXT 32768`; changing actual backend context needs a separate proxy/runtime fix.
+- `LLAMA_CODEX_CONTEXT_WINDOW=65536` improves the CLI-side budget, but Ollama `/v1/responses` ignores request-level context overrides. Use a model alias with `PARAMETER num_ctx 65536` when the backend must actually load a 65k context.
 - Avoid retesting deleted Fable/Composer variants unless the wrapper changes to a different native Ollama tool protocol.
