@@ -35,12 +35,39 @@ pid_file="${cache_dir}/proxy-${proxy_port}.pid"
 model_catalog="${cache_dir}/model-${proxy_port}.json"
 ollama_num_parallel="${LLAMA_CODEX_OLLAMA_NUM_PARALLEL:-${OLLAMA_NUM_PARALLEL:-1}}"
 ollama_max_loaded_models="${LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS:-${OLLAMA_MAX_LOADED_MODELS:-1}}"
-default_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool|write_stdin|request_user_input|list_available_plugins_to_install|request_plugin_install|update_plan|view_image)$'
-deny_tool_pattern="${LLAMA_CODEX_DENY_TOOL_PATTERN:-${default_deny_tool_pattern}}"
+fat_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool|list_available_plugins_to_install|request_plugin_install|request_user_input|update_plan|view_image|get_goal|create_goal|update_goal|parallel)$'
+tiny_deny_tool_pattern='^(?!(?:.*\.)?exec_command$).+'
+tool_profile="${LLAMA_CODEX_TOOL_PROFILE:-lean}"
+deny_tool_pattern="${LLAMA_CODEX_DENY_TOOL_PATTERN:-}"
 restart_proxy=false
 stop_proxy=false
 action="run"
 assume_yes=false
+
+apply_tool_profile() {
+  case "${tool_profile}" in
+    lean|standard)
+      deny_tool_pattern="${fat_deny_tool_pattern}"
+      ;;
+    full)
+      deny_tool_pattern=""
+      ;;
+    tiny)
+      deny_tool_pattern="${tiny_deny_tool_pattern}"
+      ;;
+    *)
+      echo "llama-codex: unknown tool profile: ${tool_profile}" >&2
+      echo "llama-codex: expected one of: lean, standard, full, tiny" >&2
+      exit 2
+      ;;
+  esac
+}
+
+if [[ -z "${deny_tool_pattern}" ]]; then
+  apply_tool_profile
+else
+  tool_profile="custom"
+fi
 
 args=()
 while (($#)); do
@@ -87,6 +114,30 @@ while (($#)); do
       context_window="${1#--llama-context=}"
       shift
       ;;
+    --llama-lean)
+      tool_profile="lean"
+      apply_tool_profile
+      shift
+      ;;
+    --llama-tiny)
+      tool_profile="tiny"
+      apply_tool_profile
+      shift
+      ;;
+    --llama-tools)
+      if (($# < 2)); then
+        echo "llama-codex: $1 requires a profile value" >&2
+        exit 2
+      fi
+      tool_profile="$2"
+      apply_tool_profile
+      shift 2
+      ;;
+    --llama-tools=*)
+      tool_profile="${1#--llama-tools=}"
+      apply_tool_profile
+      shift
+      ;;
     --llama-status)
       mkdir -p "${cache_dir}"
       echo "model=${model}"
@@ -95,6 +146,7 @@ while (($#)); do
       echo "proxy_url=${proxy_url}"
       echo "ollama_num_parallel=${ollama_num_parallel}"
       echo "ollama_max_loaded_models=${ollama_max_loaded_models}"
+      echo "tool_profile=${tool_profile}"
       echo "deny_tool_pattern=${deny_tool_pattern}"
       echo "env_file=${env_file}"
       echo "model_catalog=${model_catalog}"
@@ -131,6 +183,9 @@ Default:
 Llama wrapper options:
   --llama-model MODEL       Select the Ollama model without passing -m to Codex.
   --llama-context TOKENS    Set advertised model context window.
+  --llama-tools PROFILE     Select tool profile: lean, standard, full, or tiny.
+  --llama-lean              Use the lean profile, which hides bulky non-coding tools.
+  --llama-tiny              Use the tiny tool profile for strict benchmarks.
   --llama-status            Print resolved wrapper configuration and exit.
   --llama-restart           Restart the compatibility proxy before launching Codex.
   --llama-stop              Stop the compatibility proxy and exit.
@@ -149,6 +204,7 @@ Environment:
   LLAMA_CODEX_PROXY_PORT
   LLAMA_CODEX_OLLAMA_NUM_PARALLEL
   LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS
+  LLAMA_CODEX_TOOL_PROFILE       Defaults to lean.
   LLAMA_CODEX_DENY_TOOL_PATTERN
   LLAMA_CODEX_LOG_DIR
   LLAMA_CODEX_CACHE_DIR
@@ -371,7 +427,7 @@ ensure_proxy() {
   if [[ "${restart_proxy}" == true ]] || \
     [[ -n "${running_model}" && "${running_model}" != "${model}" ]] || \
     [[ -n "${running_context_window}" && "${running_context_window}" != "${context_window}" ]] || \
-    [[ -n "${running_deny_tool_pattern}" && "${running_deny_tool_pattern}" != "${deny_tool_pattern}" ]]; then
+    [[ "${running_deny_tool_pattern}" != "${deny_tool_pattern}" ]]; then
     kill_proxy_on_port
   fi
 
@@ -460,6 +516,7 @@ init() {
   echo "context: ${context_window}"
   echo "ollama parallelism: ${ollama_num_parallel}"
   echo "ollama max loaded models: ${ollama_max_loaded_models}"
+  echo "tool profile: ${tool_profile}"
   echo "denied tools: ${deny_tool_pattern}"
   echo
   warn_large_context

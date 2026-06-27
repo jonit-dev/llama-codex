@@ -53,10 +53,12 @@ def test_api_tags_reports_context_window():
 
 
 def test_tool_denied_matches_full_or_short_name():
-    pattern = r"^(list_mcp_resources|tool_search_tool)$"
+    pattern = r"^(list_mcp_resources|tool_search_tool|request_plugin_install)$"
     assert proxy.tool_denied("list_mcp_resources", pattern)
     assert proxy.tool_denied("tool_search.tool_search_tool", pattern)
+    assert proxy.tool_denied("functions.request_plugin_install", pattern)
     assert not proxy.tool_denied("exec_command", pattern)
+    assert not proxy.tool_denied("functions.write_stdin", pattern)
     assert not proxy.tool_denied("list_mcp_resources", "")
 
 

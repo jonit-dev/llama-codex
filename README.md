@@ -117,6 +117,24 @@ On memory-constrained machines, lower it again if the desktop becomes sluggish o
 llama-codex --llama-context 8192 --yolo
 ```
 
+`llama-codex` defaults to a lean tool profile for local models. Lean mode keeps core coding tools available while hiding bulky non-coding tools such as MCP/resource discovery, plugin installation, planning UI, image inspection, and goal-management helpers.
+
+Use a different tool profile when needed:
+
+```sh
+llama-codex --llama-tools full --yolo
+llama-codex --llama-tools tiny --llama-context 8192 --yolo
+```
+
+Available profiles:
+
+```text
+lean      default; hides bulky non-coding tools
+standard  alias for lean
+full      exposes all tools sent by Codex
+tiny      strict benchmark mode; exposes only command execution
+```
+
 When `llama-codex` starts Ollama, it uses conservative Ollama settings by default:
 
 ```text
@@ -139,6 +157,9 @@ These flags are consumed by `llama-codex` and are not passed to Codex:
 ```sh
 --llama-model MODEL
 --llama-context TOKENS
+--llama-tools PROFILE
+--llama-lean
+--llama-tiny
 --llama-status
 --llama-restart
 --llama-stop
