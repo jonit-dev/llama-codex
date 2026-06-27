@@ -498,6 +498,8 @@ def apply_exec_guard(name, arguments, reject_shell_writes):
 
     forbidden = re.compile(
         r"(^|[;&|]\s*)touch\b|"
+        r"(^|[;&|]\s*)rm\s+|"
+        r"(^|[;&|]\s*)unlink\s+|"
         r"\bcat\s*>|"
         r"\bcat\s*<<|"
         r"\btee\s+|"
@@ -514,11 +516,62 @@ def apply_exec_guard(name, arguments, reject_shell_writes):
     rejected = f"llama-codex proxy rejected edit command: {cmd}"
     data["cmd"] = (
         "printf '%s\\n' "
-        "'llama-codex proxy rejected this edit command: use apply_patch for file creation/modification; do not use touch, cat >, tee, redirects, sed -i, perl -i, or Python file writes.' "
+        "'llama-codex proxy rejected this edit command: use apply_patch for file creation/modification; do not use touch, rm, cat >, tee, redirects, sed -i, perl -i, or Python file writes.' "
         f"{shlex.quote(rejected)} "
         ">&2; exit 2"
     )
     return json.dumps(data)
+
+
+def force_patch_first_command(arguments):
+    try:
+        data = json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+    if not isinstance(data, dict):
+        return arguments
+    cmd = data.get("cmd")
+    if not isinstance(cmd, str):
+        return arguments
+    stripped = cmd.lstrip()
+    if stripped.startswith("apply_patch") or "llama-codex apply_patch compatibility" in cmd:
+        return arguments
+    message = (
+        "llama-codex proxy rejected diagnostic command during forced patch recovery: "
+        "the first command must be an apply_patch heredoc that changes an implementation file."
+    )
+    rejected = f"rejected command: {cmd}"
+    example = (
+        "required command shape: apply_patch <<'PATCH'\\n"
+        "*** Begin Patch\\n"
+        "*** Delete File: path/to/file\\n"
+        "*** Add File: path/to/file\\n"
+        "+full corrected file line\\n"
+        "*** End Patch\\n"
+        "PATCH"
+    )
+    data["cmd"] = (
+        "printf '%s\\n' "
+        f"{shlex.quote(message)} "
+        f"{shlex.quote(rejected)} "
+        f"{shlex.quote(example)} "
+        ">&2; exit 2"
+    )
+    return json.dumps(data)
+
+
+def payload_requests_force_patch_first(value):
+    if isinstance(value, dict):
+        return any(payload_requests_force_patch_first(child) for child in value.values())
+    if isinstance(value, list):
+        return any(payload_requests_force_patch_first(child) for child in value)
+    if not isinstance(value, str):
+        return False
+    normalized = " ".join(value.lower().split())
+    return (
+        "your first command in the next turn must be an apply_patch heredoc" in normalized
+        or "first command must be an apply_patch" in normalized
+    )
 
 
 def premature_prose_command(text):
@@ -576,7 +629,7 @@ def normalize_response_text(data):
     return data
 
 
-def translate_tool_text_response(data, allowed_names, reject_shell_writes=False):
+def translate_tool_text_response(data, allowed_names, reject_shell_writes=False, force_patch_first=False):
     data = normalize_response_text(data)
     translate_apply_patch_objects(data, allowed_names)
     output = data.get("output")
@@ -585,6 +638,8 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False)
     for index, item in enumerate(output):
         if translate_apply_patch_item(item, allowed_names):
             item["arguments"] = apply_exec_guard(item.get("name"), item["arguments"], reject_shell_writes)
+            if force_patch_first:
+                item["arguments"] = force_patch_first_command(item["arguments"])
             continue
         if item.get("type") == "function_call":
             name = item.get("name")
@@ -593,6 +648,8 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False)
                 name, arguments = translate_apply_patch_call(name, arguments, allowed_names)
                 item["name"] = name
                 item["arguments"] = apply_exec_guard(name, arguments, reject_shell_writes)
+                if force_patch_first:
+                    item["arguments"] = force_patch_first_command(item["arguments"])
             continue
         if item.get("type") != "message":
             continue
@@ -619,6 +676,8 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False)
         name, arguments = parsed
         name, arguments = translate_apply_patch_call(name, arguments, allowed_names)
         arguments = apply_exec_guard(name, arguments, reject_shell_writes)
+        if force_patch_first:
+            arguments = force_patch_first_command(arguments)
         call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
         output[index] = {
             "id": "fc_" + call_id.removeprefix("call_"),
@@ -729,6 +788,7 @@ class Proxy(BaseHTTPRequestHandler):
                 )
                 payload["options"] = options
             stream_response = bool(payload.get("stream"))
+            force_patch_first = payload_requests_force_patch_first(payload)
             payload["stream"] = False
             tools = payload.get("tools")
             allowed_tool_names = set()
@@ -747,11 +807,16 @@ class Proxy(BaseHTTPRequestHandler):
                     self.log_message("removed %d unsupported non-function tool(s)", removed_unsupported)
                 if removed_denied:
                     self.log_message("removed %d denied function tool(s)", removed_denied)
-            self.forward(payload, allowed_tool_names=allowed_tool_names, stream_response=stream_response)
+            self.forward(
+                payload,
+                allowed_tool_names=allowed_tool_names,
+                stream_response=stream_response,
+                force_patch_first=force_patch_first,
+            )
             return
         self.forward(read_json(self))
 
-    def forward(self, payload=None, allowed_tool_names=None, stream_response=False):
+    def forward(self, payload=None, allowed_tool_names=None, stream_response=False, force_patch_first=False):
         url = self.server.backend.rstrip("/") + self.path
         data = None
         headers = {}
@@ -770,6 +835,7 @@ class Proxy(BaseHTTPRequestHandler):
                                 json.loads(body),
                                 allowed_tool_names,
                                 reject_shell_writes=self.server.reject_shell_writes,
+                                force_patch_first=force_patch_first,
                             )
                         ).encode("utf-8")
                     except json.JSONDecodeError:

@@ -803,6 +803,8 @@ Continue from the current files. Do not restart from scratch.
 Do not answer in prose or say what you will do next.
 Your next assistant turn must call exec_command.
 Do not put exec_command(...) text inside the shell command; the shell command must be plain shell such as apply_patch, npm test, sed -n, or cat.
+Do not run rm, unlink, touch, sed -i, Python file writers, cat heredocs, tee, or shell redirects for source edits.
+If the implementation file is still a stub, missing, or mostly unchanged, use the full-file replacement form. Do not attempt an Update hunk against code that is not currently present.
 Use exec_command to run apply_patch with this exact shape:
 apply_patch <<'PATCH'
 *** Begin Patch
@@ -828,11 +830,7 @@ Edit the implementation files, then run the verification command.
 Continue until verification passes.
 EOF
 )"
-    if [[ "${no_workspace_changes}" == true ]]; then
-      replace_last_instruction "${retry_instruction}"
-    else
-      append_retry_instruction "${retry_instruction}"
-    fi
+    replace_last_instruction "${retry_instruction}"
   done
 }
 

@@ -176,6 +176,18 @@ def test_rewrites_echo_redirect_to_apply_patch():
     assert "echo" not in data["cmd"]
 
 
+def test_rejects_rm_source_edit_command():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "rm bookmarks/vault.py"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "proxy rejected this edit command" in data["cmd"]
+    assert "do not use touch, rm" in data["cmd"]
+    assert "rm bookmarks/vault.py" in data["cmd"]
+
+
 def test_unwraps_nested_exec_command_shell_text():
     arguments = proxy.apply_exec_guard(
         "exec_command",
@@ -415,6 +427,57 @@ def test_does_not_translate_completion_prose_to_exec_diagnostic():
     assert translated["output"][0]["type"] == "message"
 
 
+def test_detects_force_patch_first_prompt():
+    assert proxy.payload_requests_force_patch_first(
+        {"input": "Your first command in the next turn must be an apply_patch heredoc."}
+    )
+    assert not proxy.payload_requests_force_patch_first({"input": "Read files, then patch."})
+
+
+def test_force_patch_first_rejects_diagnostic_exec_command():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps({"cmd": "cat bookmarks/vault.py"}),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        force_patch_first=True,
+    )
+    data = json.loads(translated["output"][0]["arguments"])
+    assert "rejected diagnostic command during forced patch recovery" in data["cmd"]
+    assert "cat bookmarks/vault.py" in data["cmd"]
+    assert "required command shape" in data["cmd"]
+
+
+def test_force_patch_first_allows_apply_patch_command():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {"cmd": "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: a.txt\n+ok\n*** End Patch\nPATCH"}
+                ),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        force_patch_first=True,
+    )
+    data = json.loads(translated["output"][0]["arguments"])
+    assert data["cmd"].startswith("apply_patch <<")
+
+
 if __name__ == "__main__":
     test_parse_qwen_tool_call_suffix()
     test_ignores_disallowed_tool()
@@ -432,6 +495,7 @@ if __name__ == "__main__":
     test_rewrites_cat_heredoc_with_redirect_after_delimiter()
     test_rejected_shell_write_reports_original_command()
     test_rewrites_echo_redirect_to_apply_patch()
+    test_rejects_rm_source_edit_command()
     test_unwraps_nested_exec_command_shell_text()
     test_unwrapped_nested_exec_still_applies_shell_write_guard()
     test_rewrites_apply_patch_file_patch_flags_when_payload_is_real_patch()
@@ -446,4 +510,7 @@ if __name__ == "__main__":
     test_translates_nested_apply_patch_object()
     test_translates_premature_prose_to_exec_diagnostic()
     test_does_not_translate_completion_prose_to_exec_diagnostic()
+    test_detects_force_patch_first_prompt()
+    test_force_patch_first_rejects_diagnostic_exec_command()
+    test_force_patch_first_allows_apply_patch_command()
     print("proxy parser tests passed")

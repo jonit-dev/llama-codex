@@ -66,6 +66,18 @@ a valid patch, and `npm test` passed. This materially improves reliability for
 the "stops out of nowhere" failure mode, but more varied project runs are still
 needed before promoting `llama-codex` over `aider diff-fenced`.
 
+Harder greenfield follow-up: the bookmark-vault benchmark added JSON
+persistence, search/filtering, import/export, and a CLI. Qwen failed through
+`llama-codex` even after the premature-stop recovery. It repeatedly read files
+and stopped in prose, attempted invalid hunks against hallucinated code, tried
+to remove `bookmarks/vault.py`, then continued to issue diagnostic commands
+after forced-patch retry prompts. The harness now rejects `rm`/`unlink` source
+edits and can enforce patch-first recovery by rejecting `find`/`ls`/`cat` style
+commands during those retries. This is safer, but the model still did not
+produce a valid implementation. Treat this as evidence that prompt/harness
+guards are improving safety, not enough to make `llama-codex` the default
+greenfield SWE harness over `aider diff-fenced`.
+
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
 ## Cleanup Findings
