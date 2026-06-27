@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -78,6 +79,147 @@ def test_tool_denied_matches_full_or_short_name():
     assert not proxy.tool_denied("list_mcp_resources", "")
 
 
+def test_rewrites_touch_to_apply_patch():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "touch tasklib/__init__.py tasklib/models.py"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "apply_patch <<'PATCH_LLAMACODEX'" in data["cmd"]
+    assert "*** Add File: tasklib/__init__.py" in data["cmd"]
+    assert "*** Add File: tasklib/models.py" in data["cmd"]
+    assert "touch" not in data["cmd"]
+
+
+def test_rewrites_cat_heredoc_to_apply_patch():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "cat > tasklib/models.py << 'EOF'\nclass Task:\n    pass\nEOF"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "apply_patch <<'PATCH_LLAMACODEX'" in data["cmd"]
+    assert "*** Delete File: tasklib/models.py" in data["cmd"]
+    assert "*** Add File: tasklib/models.py" in data["cmd"]
+    assert "+class Task:" in data["cmd"]
+    assert "cat >" not in data["cmd"]
+
+
+def test_translates_native_apply_patch_call_to_exec_command():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "apply_patch",
+                "arguments": json.dumps({"patch": "*** Begin Patch\n*** Add File: a.txt\n+ok\n*** End Patch"}),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    item = translated["output"][0]
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "llama-codex apply_patch compatibility" in data["cmd"]
+    assert "apply_patch <\"$patch_file\"" in data["cmd"]
+    assert "*** Add File: a.txt" in data["cmd"]
+
+
+def test_translates_text_apply_patch_call_to_exec_command():
+    response = {
+        "id": "resp-test",
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(
+                            {
+                                "name": "apply_patch",
+                                "arguments": {
+                                    "patch": "*** Begin Patch\n*** Add File: a.txt\n+ok\n*** End Patch"
+                                },
+                            }
+                        ),
+                    }
+                ],
+            }
+        ],
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    item = translated["output"][0]
+    assert item["type"] == "function_call"
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "*** Add File: a.txt" in data["cmd"]
+
+
+def test_translates_custom_apply_patch_input_to_exec_command():
+    response = {
+        "output": [
+            {
+                "id": "cp_1",
+                "type": "custom_tool_call",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** Add File: a.txt\n+ok\n*** End Patch",
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    item = translated["output"][0]
+    assert item["type"] == "function_call"
+    assert item["name"] == "exec_command"
+    assert item["call_id"] == "call_cp_1"
+    data = json.loads(item["arguments"])
+    assert "*** Add File: a.txt" in data["cmd"]
+    assert "input" not in item
+
+
+def test_translates_unified_diff_apply_patch_to_compat_command():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "apply_patch",
+                "arguments": json.dumps({"patch": "--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1 @@\n+ok\n"}),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    item = translated["output"][0]
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "llama-codex apply_patch compatibility" in data["cmd"]
+    assert "patch -p1" in data["cmd"]
+    assert "--- /dev/null" in data["cmd"]
+
+
+def test_translates_nested_apply_patch_object():
+    response = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "call": {
+                            "name": "apply_patch",
+                            "input": "*** Begin Patch\n*** Add File: a.txt\n+ok\n*** End Patch",
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    call = translated["output"][0]["content"][0]["call"]
+    assert call["name"] == "exec_command"
+    assert call["type"] == "function_call"
+    data = json.loads(call["arguments"])
+    assert "*** Add File: a.txt" in data["cmd"]
+
+
 if __name__ == "__main__":
     test_parse_qwen_tool_call_suffix()
     test_ignores_disallowed_tool()
@@ -87,4 +229,11 @@ if __name__ == "__main__":
     test_normalizes_channel_markup_in_response_text()
     test_api_tags_reports_context_window()
     test_tool_denied_matches_full_or_short_name()
+    test_rewrites_touch_to_apply_patch()
+    test_rewrites_cat_heredoc_to_apply_patch()
+    test_translates_native_apply_patch_call_to_exec_command()
+    test_translates_text_apply_patch_call_to_exec_command()
+    test_translates_custom_apply_patch_input_to_exec_command()
+    test_translates_unified_diff_apply_patch_to_compat_command()
+    test_translates_nested_apply_patch_object()
     print("proxy parser tests passed")

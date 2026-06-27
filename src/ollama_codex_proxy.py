@@ -4,6 +4,7 @@ import html
 import json
 import os
 import re
+import shlex
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
@@ -102,6 +103,282 @@ def parse_tool_text(text, allowed_names):
     return None
 
 
+def patch_delimiter(patch):
+    base = "PATCH_LLAMACODEX"
+    delimiter = base
+    counter = 1
+    while re.search(rf"^{re.escape(delimiter)}$", patch, re.MULTILINE):
+        delimiter = f"{base}_{counter}"
+        counter += 1
+    return delimiter
+
+
+def patch_file_line(path):
+    if "\n" in path or path.startswith("-"):
+        return None
+    return path
+
+
+def add_file_patch(path, content):
+    file_line = patch_file_line(path)
+    if file_line is None:
+        return None
+    lines = ["*** Begin Patch", f"*** Add File: {file_line}"]
+    content_lines = content.splitlines()
+    if not content_lines:
+        lines.append("+")
+    else:
+        lines.extend(f"+{line}" for line in content_lines)
+    lines.append("*** End Patch")
+    return "\n".join(lines)
+
+
+def replace_file_patch(path, content):
+    file_line = patch_file_line(path)
+    if file_line is None:
+        return None
+    add_patch = add_file_patch(path, content)
+    if add_patch is None:
+        return None
+    return "\n".join(
+        [
+            "*** Begin Patch",
+            f"*** Delete File: {file_line}",
+            *add_patch.splitlines()[1:-1],
+            "*** End Patch",
+        ]
+    )
+
+
+def apply_patch_command(patch):
+    delimiter = patch_delimiter(patch)
+    return f"apply_patch <<'{delimiter}'\n{patch}\n{delimiter}"
+
+
+def apply_patch_compat_command(patch):
+    delimiter = patch_delimiter(patch)
+    return "\n".join(
+        [
+            "# llama-codex apply_patch compatibility",
+            "patch_file=$(mktemp)",
+            "clean_patch_file=$(mktemp)",
+            f"cat >\"$patch_file\" <<'{delimiter}'",
+            patch,
+            delimiter,
+            "sed '/^\\*\\*\\* /d' \"$patch_file\" >\"$clean_patch_file\"",
+            "apply_patch <\"$patch_file\" || patch -p1 <\"$clean_patch_file\" || patch -p0 <\"$clean_patch_file\"",
+            "rc=$?",
+            "rm -f \"$patch_file\" \"$clean_patch_file\"",
+            "exit $rc",
+        ]
+    )
+
+
+def is_patch_text(value):
+    if not isinstance(value, str):
+        return False
+    stripped = value.lstrip()
+    return (
+        stripped.startswith("*** Begin Patch")
+        or stripped.startswith("diff --git ")
+        or stripped.startswith("--- ")
+    )
+
+
+def extract_patch_argument(arguments):
+    if is_patch_text(arguments):
+        return arguments
+    if isinstance(arguments, dict):
+        data = arguments
+    elif isinstance(arguments, str):
+        try:
+            data = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+    else:
+        return None
+    for key in ("patch", "input", "content", "text"):
+        value = data.get(key)
+        if is_patch_text(value):
+            return value
+    return None
+
+
+def translate_apply_patch_call(name, arguments, allowed_names):
+    if not name or name.rsplit(".", 1)[-1] != "apply_patch":
+        return name, arguments
+    exec_name = next((candidate for candidate in allowed_names if candidate.rsplit(".", 1)[-1] == "exec_command"), None)
+    if not exec_name:
+        return name, arguments
+    patch = extract_patch_argument(arguments)
+    if patch is None:
+        return name, arguments
+    return exec_name, json.dumps({"cmd": apply_patch_compat_command(patch)})
+
+
+def translate_apply_patch_item(item, allowed_names):
+    name = item.get("name")
+    if not name or name.rsplit(".", 1)[-1] != "apply_patch":
+        return False
+    patch = extract_patch_argument(item.get("arguments"))
+    if patch is None:
+        patch = extract_patch_argument(item.get("input"))
+    if patch is None:
+        return False
+    exec_name = next((candidate for candidate in allowed_names if candidate.rsplit(".", 1)[-1] == "exec_command"), None)
+    if not exec_name:
+        return False
+    item["type"] = "function_call"
+    item["name"] = exec_name
+    item["arguments"] = json.dumps({"cmd": apply_patch_compat_command(patch)})
+    item["status"] = item.get("status", "completed")
+    item["call_id"] = item.get("call_id") or "call_" + item.get("id", "ollama_apply_patch").replace("-", "_")
+    item.pop("input", None)
+    return True
+
+
+def translate_apply_patch_objects(value, allowed_names):
+    if isinstance(value, list):
+        for item in value:
+            translate_apply_patch_objects(item, allowed_names)
+        return value
+    if not isinstance(value, dict):
+        return value
+
+    name = value.get("name")
+    if isinstance(name, str) and name.rsplit(".", 1)[-1] == "apply_patch":
+        translate_apply_patch_item(value, allowed_names)
+
+    for child in list(value.values()):
+        translate_apply_patch_objects(child, allowed_names)
+    return value
+
+
+def conditional_apply_patch_command(path, content):
+    add_patch = add_file_patch(path, content)
+    replace_patch = replace_file_patch(path, content)
+    if add_patch is None or replace_patch is None:
+        return None
+    add_delimiter = patch_delimiter(add_patch)
+    replace_delimiter = patch_delimiter(replace_patch)
+    quoted_path = shlex.quote(path)
+    return "\n".join(
+        [
+            f"if [ -e {quoted_path} ]; then",
+            f"apply_patch <<'{replace_delimiter}'",
+            replace_patch,
+            replace_delimiter,
+            "else",
+            f"apply_patch <<'{add_delimiter}'",
+            add_patch,
+            add_delimiter,
+            "fi",
+        ]
+    )
+
+
+def unquote_shell_word(value):
+    try:
+        parts = shlex.split(value)
+    except ValueError:
+        return None
+    if len(parts) != 1:
+        return None
+    return parts[0]
+
+
+def rewrite_cat_heredoc(cmd):
+    match = re.match(
+        r"\s*cat\s*>\s*(?P<path>(?:'[^']+'|\"[^\"]+\"|[^\s]+))\s*<<\s*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_-]*)\2\s*\n(?P<body>.*)\n(?P=delimiter)\s*;?\s*$",
+        cmd,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    path = unquote_shell_word(match.group("path"))
+    if not path:
+        return None
+    return conditional_apply_patch_command(path, match.group("body"))
+
+
+def rewrite_touch(cmd):
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return None
+    if len(parts) < 2 or parts[0] != "touch":
+        return None
+    paths = [part for part in parts[1:] if not part.startswith("-")]
+    if len(paths) != len(parts) - 1:
+        return None
+    commands = []
+    for path in paths:
+        patch = add_file_patch(path, "")
+        if patch is None:
+            return None
+        delimiter = patch_delimiter(patch)
+        commands.extend(
+            [
+                f"if [ -e {shlex.quote(path)} ]; then",
+                ":",
+                "else",
+                f"apply_patch <<'{delimiter}'",
+                patch,
+                delimiter,
+                "fi",
+            ]
+        )
+    return "\n".join(commands)
+
+
+def rewrite_shell_write_command(cmd):
+    return rewrite_cat_heredoc(cmd) or rewrite_touch(cmd)
+
+
+def apply_exec_guard(name, arguments, reject_shell_writes):
+    if not reject_shell_writes or not name:
+        return arguments
+    if name.rsplit(".", 1)[-1] != "exec_command":
+        return arguments
+    try:
+        data = json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+    if not isinstance(data, dict):
+        return arguments
+    cmd = data.get("cmd")
+    if not isinstance(cmd, str):
+        return arguments
+    stripped = cmd.lstrip()
+    if "llama-codex apply_patch compatibility" in cmd:
+        return arguments
+    if stripped.startswith("apply_patch"):
+        return arguments
+    rewritten = rewrite_shell_write_command(cmd)
+    if rewritten:
+        data["cmd"] = rewritten
+        return json.dumps(data)
+
+    forbidden = re.compile(
+        r"(^|[;&|]\s*)touch\b|"
+        r"\bcat\s*>|"
+        r"\btee\s+|"
+        r"\bsed\s+-i\b|"
+        r"\bperl\s+-i\b|"
+        r">\s*[\w./~-]+|"
+        r"\bpython3?\b.*\b(open|write_text)\s*\(",
+        re.DOTALL,
+    )
+    if not forbidden.search(cmd):
+        return arguments
+    data["cmd"] = (
+        "printf '%s\\n' "
+        "'llama-codex proxy rejected this edit command: use apply_patch for file creation/modification; do not use touch, cat >, tee, redirects, sed -i, perl -i, or Python file writes.' "
+        ">&2; exit 2"
+    )
+    return json.dumps(data)
+
+
 def normalize_model_text(text):
     if not isinstance(text, str):
         return text
@@ -127,22 +404,36 @@ def normalize_response_text(data):
     return data
 
 
-def translate_tool_text_response(data, allowed_names):
+def translate_tool_text_response(data, allowed_names, reject_shell_writes=False):
     data = normalize_response_text(data)
+    translate_apply_patch_objects(data, allowed_names)
     output = data.get("output")
     if not isinstance(output, list):
         return data
     for index, item in enumerate(output):
+        if translate_apply_patch_item(item, allowed_names):
+            item["arguments"] = apply_exec_guard(item.get("name"), item["arguments"], reject_shell_writes)
+            continue
+        if item.get("type") == "function_call":
+            name = item.get("name")
+            arguments = item.get("arguments")
+            if isinstance(arguments, str):
+                name, arguments = translate_apply_patch_call(name, arguments, allowed_names)
+                item["name"] = name
+                item["arguments"] = apply_exec_guard(name, arguments, reject_shell_writes)
+            continue
         if item.get("type") != "message":
             continue
         content = item.get("content")
         if not isinstance(content, list):
             continue
         text = "".join(part.get("text", "") for part in content if part.get("type") == "output_text")
-        parsed = parse_tool_text(text, allowed_names)
+        parsed = parse_tool_text(text, set(allowed_names) | {"apply_patch"})
         if not parsed:
             continue
         name, arguments = parsed
+        name, arguments = translate_apply_patch_call(name, arguments, allowed_names)
+        arguments = apply_exec_guard(name, arguments, reject_shell_writes)
         call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
         output[index] = {
             "id": "fc_" + call_id.removeprefix("call_"),
@@ -270,7 +561,13 @@ class Proxy(BaseHTTPRequestHandler):
                 content_type = resp.headers.get("content-type", "application/json")
                 if allowed_tool_names and "application/json" in content_type:
                     try:
-                        body = json.dumps(translate_tool_text_response(json.loads(body), allowed_tool_names)).encode("utf-8")
+                        body = json.dumps(
+                            translate_tool_text_response(
+                                json.loads(body),
+                                allowed_tool_names,
+                                reject_shell_writes=self.server.reject_shell_writes,
+                            )
+                        ).encode("utf-8")
                     except json.JSONDecodeError:
                         pass
                 if stream_response and "application/json" in content_type:
@@ -296,6 +593,11 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--context-window", type=int, default=32768)
     parser.add_argument("--deny-tool-pattern", default=os.environ.get("LLAMA_CODEX_DENY_TOOL_PATTERN", ""))
+    parser.add_argument(
+        "--reject-shell-writes",
+        action="store_true",
+        default=os.environ.get("LLAMA_CODEX_REJECT_SHELL_WRITES", "").lower() in {"1", "true", "yes"},
+    )
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), Proxy)
@@ -303,6 +605,7 @@ def main():
     server.model = args.model
     server.context_window = args.context_window
     server.deny_tool_pattern = args.deny_tool_pattern
+    server.reject_shell_writes = args.reject_shell_writes
     print(f"ollama-codex-proxy listening on http://{args.host}:{args.port} -> {args.backend}", flush=True)
     server.serve_forever()
 
