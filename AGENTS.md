@@ -18,6 +18,7 @@
 
 ## Failure Classification
 
+- Important: If its fixable on our end, patch the code, rerun the benchmark and see if it passes. 
 - Direct-following failure: the model cannot satisfy the direct exact-response sanity check.
 - Proxy/template failure: direct Ollama generation works, but `llama-codex` fails before model work because the proxy/runtime payload is rejected.
 - Tool-compatibility failure: the model emits invalid tool calls, pseudo tool calls, or session-control calls with bogus process IDs.

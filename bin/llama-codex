@@ -22,7 +22,7 @@ if [[ -f "${env_file}" ]]; then
   set +a
 fi
 
-default_model="hf.co/deepreinforce-ai/Ornith-1.0-9B-GGUF:Q4_K_M"
+default_model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL"
 model="${LLAMA_CODEX_MODEL:-${default_model}}"
 context_window="${LLAMA_CODEX_CONTEXT_WINDOW:-65536}"
 ollama_url="${LLAMA_CODEX_OLLAMA_URL:-http://127.0.0.1:11434}"

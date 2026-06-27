@@ -32,6 +32,22 @@ def test_normalizes_channel_markup_before_parsing_tool_call():
     assert parsed == ("exec_command", '{"cmd": "pwd"}')
 
 
+def test_parses_tool_call_embedded_after_prose():
+    parsed = proxy.parse_tool_text(
+        'I will inspect the file.\n\n{"name": "exec_command", "arguments": {"cmd": "cat README.md", "workdir": "/tmp"}}',
+        {"exec_command"},
+    )
+    assert parsed == ("exec_command", '{"cmd": "cat README.md", "workdir": "/tmp"}')
+
+
+def test_parses_xml_tool_call_with_function_attribute():
+    parsed = proxy.parse_tool_text(
+        '<tools>\n  <tool name="exec_command" function="{&quot;cmd&quot;:&quot;python3 -m unittest discover -s tests -v&quot;,&quot;workdir&quot;:&quot;/tmp&quot;}" />\n</tools>',
+        {"exec_command"},
+    )
+    assert parsed == ("exec_command", '{"cmd": "python3 -m unittest discover -s tests -v", "workdir": "/tmp"}')
+
+
 def test_normalizes_channel_markup_in_response_text():
     data = {
         "output": [
@@ -66,6 +82,8 @@ if __name__ == "__main__":
     test_parse_qwen_tool_call_suffix()
     test_ignores_disallowed_tool()
     test_normalizes_channel_markup_before_parsing_tool_call()
+    test_parses_tool_call_embedded_after_prose()
+    test_parses_xml_tool_call_with_function_attribute()
     test_normalizes_channel_markup_in_response_text()
     test_api_tags_reports_context_window()
     test_tool_denied_matches_full_or_short_name()
