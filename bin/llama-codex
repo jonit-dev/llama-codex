@@ -27,6 +27,7 @@ qwen3_65k_base_model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL
 default_model="${qwen3_65k_alias}"
 model="${LLAMA_CODEX_MODEL:-${default_model}}"
 context_window="${LLAMA_CODEX_CONTEXT_WINDOW:-65536}"
+max_output_tokens="${LLAMA_CODEX_MAX_OUTPUT_TOKENS:-2048}"
 ollama_url="${LLAMA_CODEX_OLLAMA_URL:-http://127.0.0.1:11434}"
 proxy_host="${LLAMA_CODEX_PROXY_HOST:-127.0.0.1}"
 proxy_port="${LLAMA_CODEX_PROXY_PORT:-11435}"
@@ -83,6 +84,7 @@ lean_deny_tool_pattern='^(write_stdin|list_mcp_resources|list_mcp_resource_templ
 tiny_deny_tool_pattern='^(?!(?:.*\.)?exec_command$).+'
 tool_profile="${LLAMA_CODEX_TOOL_PROFILE:-lean}"
 deny_tool_pattern="${LLAMA_CODEX_DENY_TOOL_PATTERN:-}"
+reject_shell_writes="${LLAMA_CODEX_REJECT_SHELL_WRITES:-1}"
 restart_proxy=false
 stop_proxy=false
 action="run"
@@ -189,12 +191,14 @@ while (($#)); do
       mkdir -p "${cache_dir}"
       echo "model=${model}"
       echo "context_window=${context_window}"
+      echo "max_output_tokens=${max_output_tokens}"
       echo "ollama_url=${ollama_url}"
       echo "proxy_url=${proxy_url}"
       echo "ollama_num_parallel=${ollama_num_parallel}"
       echo "ollama_max_loaded_models=${ollama_max_loaded_models}"
       echo "tool_profile=${tool_profile}"
       echo "deny_tool_pattern=${deny_tool_pattern}"
+      echo "reject_shell_writes=${reject_shell_writes}"
       echo "base_instructions_source=${base_instructions_source}"
       echo "env_file=${env_file}"
       echo "model_catalog=${model_catalog}"
@@ -382,9 +386,21 @@ proxy_context_window() {
     || true
 }
 
+proxy_max_output_tokens() {
+  curl -fsS "${proxy_url}/api/tags" 2>/dev/null \
+    | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["models"][0].get("max_output_tokens") or "")' 2>/dev/null \
+    || true
+}
+
 proxy_deny_tool_pattern() {
   curl -fsS "${proxy_url}/api/tags" 2>/dev/null \
     | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["models"][0].get("deny_tool_pattern") or "")' 2>/dev/null \
+    || true
+}
+
+proxy_reject_shell_writes() {
+  curl -fsS "${proxy_url}/api/tags" 2>/dev/null \
+    | python3 -c 'import json,sys; data=json.load(sys.stdin); print("1" if data["models"][0].get("reject_shell_writes") else "0")' 2>/dev/null \
     || true
 }
 
@@ -522,26 +538,40 @@ PY
 ensure_proxy() {
   local running_model
   local running_context_window
+  local running_max_output_tokens
   local running_deny_tool_pattern
+  local running_reject_shell_writes
 
   running_model="$(proxy_model)"
   running_context_window="$(proxy_context_window)"
+  running_max_output_tokens="$(proxy_max_output_tokens)"
   running_deny_tool_pattern="$(proxy_deny_tool_pattern)"
+  running_reject_shell_writes="$(proxy_reject_shell_writes)"
   if [[ "${restart_proxy}" == true ]] || \
     [[ -n "${running_model}" && "${running_model}" != "${model}" ]] || \
     [[ -n "${running_context_window}" && "${running_context_window}" != "${context_window}" ]] || \
-    [[ "${running_deny_tool_pattern}" != "${deny_tool_pattern}" ]]; then
+    [[ -n "${running_max_output_tokens}" && "${running_max_output_tokens}" != "${max_output_tokens}" ]] || \
+    [[ "${running_deny_tool_pattern}" != "${deny_tool_pattern}" ]] || \
+    [[ -n "${running_reject_shell_writes}" && "${running_reject_shell_writes}" != "$(case "${reject_shell_writes}" in 1|true|TRUE|yes|YES|on|ON) echo 1 ;; *) echo 0 ;; esac)" ]]; then
     kill_proxy_on_port
   fi
 
   if ! curl -fsS "${proxy_url}/api/tags" >/dev/null 2>&1; then
+    local proxy_guard_args=()
+    case "${reject_shell_writes}" in
+      1|true|TRUE|yes|YES|on|ON)
+        proxy_guard_args+=(--reject-shell-writes)
+        ;;
+    esac
     nohup "${proxy_script}" \
       --host "${proxy_host}" \
       --port "${proxy_port}" \
       --backend "${ollama_url}" \
       --model "${model}" \
       --context-window "${context_window}" \
+      --max-output-tokens "${max_output_tokens}" \
       --deny-tool-pattern "${deny_tool_pattern}" \
+      "${proxy_guard_args[@]}" \
       >>"${log_dir}/llama-codex-proxy.log" 2>&1 &
     echo "$!" >"${pid_file}"
 

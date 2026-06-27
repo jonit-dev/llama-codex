@@ -69,6 +69,23 @@ def test_api_tags_reports_context_window():
     assert metadata["models"][0]["context_window"] == 8192
 
 
+def test_api_tags_can_report_reject_shell_writes():
+    class Server:
+        model = "model-a"
+        context_window = 8192
+        deny_tool_pattern = ""
+        reject_shell_writes = True
+
+    assert Server.reject_shell_writes is True
+
+
+def test_cap_positive_int():
+    assert proxy.cap_positive_int(None, 2048) == 2048
+    assert proxy.cap_positive_int(-1, 2048) == 2048
+    assert proxy.cap_positive_int(4096, 2048) == 2048
+    assert proxy.cap_positive_int(1024, 2048) == 1024
+
+
 def test_tool_denied_matches_full_or_short_name():
     pattern = r"^(list_mcp_resources|tool_search_tool|request_plugin_install)$"
     assert proxy.tool_denied("list_mcp_resources", pattern)
@@ -90,6 +107,18 @@ def test_rewrites_touch_to_apply_patch():
     assert "*** Add File: tasklib/__init__.py" in data["cmd"]
     assert "*** Add File: tasklib/models.py" in data["cmd"]
     assert "touch" not in data["cmd"]
+
+
+def test_rewritten_touch_rejects_top_level_module_shadowing_package():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps({"cmd": "touch notes.py"}),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "[ -d notes ]" in data["cmd"]
+    assert "edit the package files instead" in data["cmd"]
+    assert "*** Add File: notes.py" in data["cmd"]
 
 
 def test_rewrites_cat_heredoc_to_apply_patch():
@@ -195,6 +224,33 @@ def test_translates_unified_diff_apply_patch_to_compat_command():
     assert "--- /dev/null" in data["cmd"]
 
 
+def test_repairs_shorthand_apply_patch_header():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "apply_patch",
+                "arguments": json.dumps(
+                    {"patch": "*** Begin Patch\n*** notes/__init__.py\n+from .store import NoteStore\n*** End Patch"}
+                ),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    data = json.loads(translated["output"][0]["arguments"])
+    assert "*** Delete File: notes/__init__.py" in data["cmd"]
+    assert "*** Add File: notes/__init__.py" in data["cmd"]
+    assert "+from .store import NoteStore" in data["cmd"]
+    assert "llama-codex apply_patch compatibility" not in data["cmd"]
+
+
+def test_shorthand_patch_rejects_top_level_module_shadowing_package():
+    command = proxy.shorthand_patch_command("*** Begin Patch\n*** notes.py\n+VALUE = 1\n*** End Patch")
+    assert command is not None
+    assert "[ -d notes ]" in command
+    assert "edit the package files instead" in command
+
+
 def test_translates_nested_apply_patch_object():
     response = {
         "output": [
@@ -228,12 +284,17 @@ if __name__ == "__main__":
     test_parses_xml_tool_call_with_function_attribute()
     test_normalizes_channel_markup_in_response_text()
     test_api_tags_reports_context_window()
+    test_api_tags_can_report_reject_shell_writes()
+    test_cap_positive_int()
     test_tool_denied_matches_full_or_short_name()
     test_rewrites_touch_to_apply_patch()
+    test_rewritten_touch_rejects_top_level_module_shadowing_package()
     test_rewrites_cat_heredoc_to_apply_patch()
     test_translates_native_apply_patch_call_to_exec_command()
     test_translates_text_apply_patch_call_to_exec_command()
     test_translates_custom_apply_patch_input_to_exec_command()
     test_translates_unified_diff_apply_patch_to_compat_command()
+    test_repairs_shorthand_apply_patch_header()
+    test_shorthand_patch_rejects_top_level_module_shadowing_package()
     test_translates_nested_apply_patch_object()
     print("proxy parser tests passed")

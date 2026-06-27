@@ -45,6 +45,12 @@ def model_metadata(model, context_window):
     }
 
 
+def cap_positive_int(value, cap):
+    if not isinstance(value, int) or value <= 0:
+        return cap
+    return min(value, cap)
+
+
 def parse_tool_text(text, allowed_names):
     text = normalize_model_text(text)
     candidates = []
@@ -155,7 +161,27 @@ def apply_patch_command(patch):
     return f"apply_patch <<'{delimiter}'\n{patch}\n{delimiter}"
 
 
+def shorthand_patch_command(patch):
+    lines = patch.splitlines()
+    if len(lines) < 4:
+        return None
+    if lines[0].strip() != "*** Begin Patch" or lines[-1].strip() != "*** End Patch":
+        return None
+    match = re.fullmatch(r"\*\*\*\s+(?!Add File:|Delete File:|Update File:)(?P<path>\S.*)", lines[1].strip())
+    if not match:
+        return None
+    content = []
+    for line in lines[2:-1]:
+        if not line.startswith("+"):
+            return None
+        content.append(line[1:])
+    return conditional_apply_patch_command(match.group("path"), "\n".join(content))
+
+
 def apply_patch_compat_command(patch):
+    shorthand = shorthand_patch_command(patch)
+    if shorthand:
+        return shorthand
     delimiter = patch_delimiter(patch)
     return "\n".join(
         [
@@ -262,8 +288,21 @@ def conditional_apply_patch_command(path, content):
     add_delimiter = patch_delimiter(add_patch)
     replace_delimiter = patch_delimiter(replace_patch)
     quoted_path = shlex.quote(path)
+    guard = []
+    if "/" not in path and path.endswith(".py"):
+        package_dir = path[:-3]
+        guard = [
+            f"if [ ! -e {quoted_path} ] && [ -d {shlex.quote(package_dir)} ]; then",
+            (
+                "printf '%s\\n' "
+                f"{shlex.quote(f'llama-codex proxy rejected creation of {path}: {package_dir}/ already exists; edit the package files instead.')} "
+                ">&2; exit 2"
+            ),
+            "fi",
+        ]
     return "\n".join(
         [
+            *guard,
             f"if [ -e {quoted_path} ]; then",
             f"apply_patch <<'{replace_delimiter}'",
             replace_patch,
@@ -317,6 +356,19 @@ def rewrite_touch(cmd):
         if patch is None:
             return None
         delimiter = patch_delimiter(patch)
+        if "/" not in path and path.endswith(".py"):
+            package_dir = path[:-3]
+            commands.extend(
+                [
+                    f"if [ ! -e {shlex.quote(path)} ] && [ -d {shlex.quote(package_dir)} ]; then",
+                    (
+                        "printf '%s\\n' "
+                        f"{shlex.quote(f'llama-codex proxy rejected creation of {path}: {package_dir}/ already exists; edit the package files instead.')} "
+                        ">&2; exit 2"
+                    ),
+                    "fi",
+                ]
+            )
         commands.extend(
             [
                 f"if [ -e {shlex.quote(path)} ]; then",
@@ -511,7 +563,9 @@ class Proxy(BaseHTTPRequestHandler):
                             "name": self.server.model,
                             "model": self.server.model,
                             "context_window": self.server.context_window,
+                            "max_output_tokens": self.server.max_output_tokens,
                             "deny_tool_pattern": self.server.deny_tool_pattern,
+                            "reject_shell_writes": self.server.reject_shell_writes,
                         }
                     ]
                 },
@@ -524,6 +578,23 @@ class Proxy(BaseHTTPRequestHandler):
         if path == "/v1/responses":
             payload = read_json(self)
             payload["model"] = self.server.model
+            if self.server.max_output_tokens > 0:
+                payload["max_output_tokens"] = cap_positive_int(
+                    payload.get("max_output_tokens"),
+                    self.server.max_output_tokens,
+                )
+                payload["max_tokens"] = cap_positive_int(
+                    payload.get("max_tokens"),
+                    self.server.max_output_tokens,
+                )
+                options = payload.get("options")
+                if not isinstance(options, dict):
+                    options = {}
+                options["num_predict"] = cap_positive_int(
+                    options.get("num_predict"),
+                    self.server.max_output_tokens,
+                )
+                payload["options"] = options
             stream_response = bool(payload.get("stream"))
             payload["stream"] = False
             tools = payload.get("tools")
@@ -592,6 +663,7 @@ def main():
     parser.add_argument("--backend", default="http://127.0.0.1:11434")
     parser.add_argument("--model", required=True)
     parser.add_argument("--context-window", type=int, default=32768)
+    parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get("LLAMA_CODEX_MAX_OUTPUT_TOKENS", "2048")))
     parser.add_argument("--deny-tool-pattern", default=os.environ.get("LLAMA_CODEX_DENY_TOOL_PATTERN", ""))
     parser.add_argument(
         "--reject-shell-writes",
@@ -604,6 +676,7 @@ def main():
     server.backend = args.backend
     server.model = args.model
     server.context_window = args.context_window
+    server.max_output_tokens = args.max_output_tokens
     server.deny_tool_pattern = args.deny_tool_pattern
     server.reject_shell_writes = args.reject_shell_writes
     print(f"ollama-codex-proxy listening on http://{args.host}:{args.port} -> {args.backend}", flush=True)

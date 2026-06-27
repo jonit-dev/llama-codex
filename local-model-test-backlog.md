@@ -53,7 +53,9 @@ Pass criteria:
 
 ## Current Default / Baseline
 
-`qwen3-coder-30b-65k` is the current default and baseline. It aliases `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL`, has passed the medium benchmark, and has passed the hard note-service benchmark with real tool use, file edits, test execution, repair, and independent verification at actual Ollama `CONTEXT 65536`.
+`qwen3-coder-30b-65k` is the current default and baseline. It aliases `hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL`, has passed the medium benchmark, and has one historical hard note-service pass with real tool use, file edits, test execution, repair, and independent verification at actual Ollama `CONTEXT 65536`.
+
+Reproduction note from 2026-06-27: after adding stricter local edit shims, output caps, and shell-write rejection, fresh hard note-service reruns did not consistently reproduce the historical pass. `model_reasoning_effort=low` improved tool cadence, but Qwen still emitted placeholder file creation, malformed patch headers, shell-write attempts, and a top-level module that shadowed an existing package. The patched proxy now catches or repairs those cases, but the hard rerun still cycled without implementing the package files. Treat the historical pass as evidence that this model can do the task, not as evidence that `llama-codex` is currently more reliable than `aider diff-fenced`.
 
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
