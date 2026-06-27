@@ -57,15 +57,21 @@ Pass criteria:
 
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
+## Cleanup Findings
+
+After the failed candidate pass, local Ollama storage was cleaned so only `qwen3-coder-30b-65k` remains from this benchmark set. Removed entries included Qwen3-Coder-Next `UD-TQ1_0`, Qwen3.5 SWE-agent 9B, North Mini Code, Ornith 35B, both Qwopus3.6 variants, the duplicate `qwen3-coder-30b-32k` alias, and the experimental `qwen3-coder-30b-128k` / 1M model entries. The failed hard run copy at `models-testing-sandbox/runs/qwen3-coder-next-tq1-hard` and temporary alias files under `models-testing-sandbox/models/` were also removed.
+
+Retain only `qwen3-coder-30b-65k` unless a new candidate passes direct sanity and the hard benchmark. The 65k alias points at the accepted baseline blob with actual `num_ctx 65536`; the removed 32k alias was redundant, and the removed 128k/1M entries were separate experiments that were not the accepted baseline.
+
 ## Current Queue
 
 | Priority | Model | Purpose | Status |
 | ---: | --- | --- | --- |
-| 1 | `hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_M` | Qwen coding-agent successor with 256k advertised context and explicit tool-use focus | Deferred; `UD-TQ1_0` failed hard repair, so only a higher-quant hard pass can justify replacing the baseline |
-| 2 | `hf.co/unsloth/North-Mini-Code-1.0-GGUF:UD-Q4_K_M` | 30B-A3B code model trained for agentic software engineering, terminal tasks, and tool use | Failed direct exact-response sanity via `north-mini-code-65k`; do not use for coding-agent tests |
-| 3 | `hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:Q4_K_M` | Larger Ornith agentic-coding release with reported tool-call and SWE-bench strength | Failed direct exact-response sanity via `ornith-35b-65k`; worse gate behavior than Ornith 9B |
-| 4 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-MTP-GGUF:Q4_K_M` | 27B dense agentic coder with tool-use/function-calling training | Failed direct exact-response sanity via `qwopus36-27b-coder-mtp-65k`; do not use for coding-agent tests |
-| 5 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-Compat-MTP-GGUF:Q4_K_M` | Compatibility variant of Qwopus3.6 27B coder for template/tool-call fallback | Failed direct exact-response sanity via `qwopus36-27b-coder-compat-mtp-65k`; fallback did not improve behavior |
+| 1 | `hf.co/unsloth/Qwen3-Coder-Next-GGUF:UD-Q4_K_M` | Qwen coding-agent successor with 256k advertised context and explicit tool-use focus | Deferred; `UD-TQ1_0` failed hard repair and was removed, so only a higher-quant hard pass can justify replacing the baseline |
+| 2 | `hf.co/unsloth/North-Mini-Code-1.0-GGUF:UD-Q4_K_M` | 30B-A3B code model trained for agentic software engineering, terminal tasks, and tool use | Failed direct exact-response sanity via `north-mini-code-65k`; removed after cleanup |
+| 3 | `hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:Q4_K_M` | Larger Ornith agentic-coding release with reported tool-call and SWE-bench strength | Failed direct exact-response sanity via `ornith-35b-65k`; removed after cleanup |
+| 4 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-MTP-GGUF:Q4_K_M` | 27B dense agentic coder with tool-use/function-calling training | Failed direct exact-response sanity via `qwopus36-27b-coder-mtp-65k`; removed after cleanup |
+| 5 | `hf.co/Jackrong/Qwopus3.6-27B-Coder-Compat-MTP-GGUF:Q4_K_M` | Compatibility variant of Qwopus3.6 27B coder for template/tool-call fallback | Failed direct exact-response sanity via `qwopus36-27b-coder-compat-mtp-65k`; removed after cleanup |
 
 ## Testing Notes
 
