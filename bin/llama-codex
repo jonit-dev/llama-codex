@@ -13,8 +13,16 @@ while [[ -L "${script_path}" ]]; do
 done
 project_root="$(cd "$(dirname "${script_path}")/.." && pwd)"
 proxy_script="${project_root}/src/ollama_codex_proxy.py"
+env_file="${LLAMA_CODEX_ENV_FILE:-${project_root}/.env}"
 
-default_model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL"
+if [[ -f "${env_file}" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${env_file}"
+  set +a
+fi
+
+default_model="hf.co/deepreinforce-ai/Ornith-1.0-9B-GGUF:Q4_K_M"
 model="${LLAMA_CODEX_MODEL:-${default_model}}"
 context_window="${LLAMA_CODEX_CONTEXT_WINDOW:-65536}"
 ollama_url="${LLAMA_CODEX_OLLAMA_URL:-http://127.0.0.1:11434}"
@@ -27,7 +35,7 @@ pid_file="${cache_dir}/proxy-${proxy_port}.pid"
 model_catalog="${cache_dir}/model-${proxy_port}.json"
 ollama_num_parallel="${LLAMA_CODEX_OLLAMA_NUM_PARALLEL:-${OLLAMA_NUM_PARALLEL:-1}}"
 ollama_max_loaded_models="${LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS:-${OLLAMA_MAX_LOADED_MODELS:-1}}"
-default_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool)$'
+default_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool|write_stdin|request_user_input|list_available_plugins_to_install|request_plugin_install|update_plan|view_image)$'
 deny_tool_pattern="${LLAMA_CODEX_DENY_TOOL_PATTERN:-${default_deny_tool_pattern}}"
 restart_proxy=false
 stop_proxy=false
@@ -88,6 +96,7 @@ while (($#)); do
       echo "ollama_num_parallel=${ollama_num_parallel}"
       echo "ollama_max_loaded_models=${ollama_max_loaded_models}"
       echo "deny_tool_pattern=${deny_tool_pattern}"
+      echo "env_file=${env_file}"
       echo "model_catalog=${model_catalog}"
       exit 0
       ;;
@@ -132,6 +141,7 @@ Codex model options:
   -m, --model MODEL         Select model for both Codex and the proxy.
 
 Environment:
+  LLAMA_CODEX_ENV_FILE
   LLAMA_CODEX_MODEL
   LLAMA_CODEX_CONTEXT_WINDOW
   LLAMA_CODEX_OLLAMA_URL

@@ -34,6 +34,14 @@ llama-codex init
 
 `llama-codex init` verifies required commands, starts Ollama, pulls the default model if missing, writes the temporary model catalog, starts the compatibility proxy, and runs `doctor`.
 
+Optional local config can live in `.env`:
+
+```sh
+cp .env.example .env
+```
+
+The `.env` file is ignored by git. Set `LLAMA_CODEX_ENV_FILE=/path/to/file` to load a different config file.
+
 Before `init`, make sure these are installed:
 
 ```text
@@ -69,7 +77,7 @@ curl    brew install curl
 By default, `llama-codex` uses:
 
 ```text
-hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL
+hf.co/deepreinforce-ai/Ornith-1.0-9B-GGUF:Q4_K_M
 ```
 
 So this is enough:
@@ -84,18 +92,18 @@ llama-codex --yolo
 Use any Ollama model name that supports the API shape Codex needs:
 
 ```sh
-llama-codex --yolo -m hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL
+llama-codex --yolo -m hf.co/deepreinforce-ai/Ornith-1.0-9B-GGUF:Q4_K_M
 ```
 
 Or use environment variables:
 
 ```sh
-LLAMA_CODEX_MODEL='hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL' \
+LLAMA_CODEX_MODEL='hf.co/deepreinforce-ai/Ornith-1.0-9B-GGUF:Q4_K_M' \
 LLAMA_CODEX_CONTEXT_WINDOW=32768 \
 llama-codex --yolo
 ```
 
-The default context window is `8192` tokens. This keeps local runs less likely to put the machine under heavy memory pressure.
+The default context window is `65536` tokens.
 
 Set a larger context for the proxy/model catalog when needed:
 
