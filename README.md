@@ -145,7 +145,7 @@ On memory-constrained machines, lower it again if the desktop becomes sluggish o
 llama-codex --llama-context 8192 --yolo
 ```
 
-`llama-codex` defaults to a lean tool profile for local models. Lean mode keeps core coding tools available while hiding bulky non-coding tools such as MCP/resource discovery, plugin installation, planning UI, image inspection, and goal-management helpers.
+`llama-codex` defaults to a lean tool profile for local models. Lean mode keeps command execution available while hiding bulky non-coding tools such as MCP/resource discovery, plugin installation, planning UI, image inspection, and goal-management helpers. It also hides `write_stdin`, because local models often call it with invalid session IDs on long runs.
 
 The wrapper also adds short local-agent steering instructions through the model catalog. They bias the model toward reading relevant files, making targeted edits, using complete test output for conclusions, repairing failures minimally, and reporting the exact verification command. Override them with `LLAMA_CODEX_BASE_INSTRUCTIONS` if a model needs different behavior.
 
@@ -159,8 +159,8 @@ llama-codex --llama-tools tiny --llama-context 8192 --yolo
 Available profiles:
 
 ```text
-lean      default; hides bulky non-coding tools
-standard  alias for lean
+lean      default; hides bulky non-coding tools and write_stdin
+standard  hides bulky non-coding tools but keeps write_stdin
 full      exposes all tools sent by Codex
 tiny      strict benchmark mode; exposes only command execution
 ```

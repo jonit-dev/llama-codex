@@ -59,7 +59,8 @@ else
   base_instructions="${default_base_instructions}"
   base_instructions_source="default"
 fi
-fat_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool|list_available_plugins_to_install|request_plugin_install|request_user_input|update_plan|view_image|get_goal|create_goal|update_goal|parallel)$'
+standard_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool|list_available_plugins_to_install|request_plugin_install|request_user_input|update_plan|view_image|get_goal|create_goal|update_goal|parallel)$'
+lean_deny_tool_pattern='^(write_stdin|list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool|list_available_plugins_to_install|request_plugin_install|request_user_input|update_plan|view_image|get_goal|create_goal|update_goal|parallel)$'
 tiny_deny_tool_pattern='^(?!(?:.*\.)?exec_command$).+'
 tool_profile="${LLAMA_CODEX_TOOL_PROFILE:-lean}"
 deny_tool_pattern="${LLAMA_CODEX_DENY_TOOL_PATTERN:-}"
@@ -70,8 +71,11 @@ assume_yes=false
 
 apply_tool_profile() {
   case "${tool_profile}" in
-    lean|standard)
-      deny_tool_pattern="${fat_deny_tool_pattern}"
+    lean)
+      deny_tool_pattern="${lean_deny_tool_pattern}"
+      ;;
+    standard)
+      deny_tool_pattern="${standard_deny_tool_pattern}"
       ;;
     full)
       deny_tool_pattern=""
@@ -209,7 +213,7 @@ Llama wrapper options:
   --llama-model MODEL       Select the Ollama model without passing -m to Codex.
   --llama-context TOKENS    Set advertised model context window.
   --llama-tools PROFILE     Select tool profile: lean, standard, full, or tiny.
-  --llama-lean              Use the lean profile, which hides bulky non-coding tools.
+  --llama-lean              Use the lean profile, which hides bulky non-coding tools and write_stdin.
   --llama-tiny              Use the tiny tool profile for strict benchmarks.
   --llama-status            Print resolved wrapper configuration and exit.
   --llama-restart           Restart the compatibility proxy before launching Codex.
