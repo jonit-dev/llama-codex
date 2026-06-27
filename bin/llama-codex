@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "${script_path}" ]]; do
+  script_dir="$(cd "$(dirname "${script_path}")" && pwd)"
+  link_target="$(readlink "${script_path}")"
+  if [[ "${link_target}" == /* ]]; then
+    script_path="${link_target}"
+  else
+    script_path="${script_dir}/${link_target}"
+  fi
+done
+project_root="$(cd "$(dirname "${script_path}")/.." && pwd)"
+proxy_script="${project_root}/src/ollama_codex_proxy.py"
+
+default_model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL"
+model="${LLAMA_CODEX_MODEL:-${default_model}}"
+context_window="${LLAMA_CODEX_CONTEXT_WINDOW:-8192}"
+ollama_url="${LLAMA_CODEX_OLLAMA_URL:-http://127.0.0.1:11434}"
+proxy_host="${LLAMA_CODEX_PROXY_HOST:-127.0.0.1}"
+proxy_port="${LLAMA_CODEX_PROXY_PORT:-11435}"
+proxy_url="http://${proxy_host}:${proxy_port}"
+log_dir="${LLAMA_CODEX_LOG_DIR:-${HOME}/.ollama}"
+cache_dir="${LLAMA_CODEX_CACHE_DIR:-${HOME}/.cache/llama-codex}"
+pid_file="${cache_dir}/proxy-${proxy_port}.pid"
+model_catalog="${cache_dir}/model-${proxy_port}.json"
+ollama_num_parallel="${LLAMA_CODEX_OLLAMA_NUM_PARALLEL:-${OLLAMA_NUM_PARALLEL:-1}}"
+ollama_max_loaded_models="${LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS:-${OLLAMA_MAX_LOADED_MODELS:-1}}"
+restart_proxy=false
+stop_proxy=false
+action="run"
+assume_yes=false
+
+args=()
+while (($#)); do
+  case "$1" in
+    init|doctor)
+      action="$1"
+      shift
+      ;;
+    -m|--model)
+      if (($# < 2)); then
+        echo "llama-codex: $1 requires a model value" >&2
+        exit 2
+      fi
+      model="$2"
+      args+=("$1" "$2")
+      shift 2
+      ;;
+    --model=*)
+      model="${1#--model=}"
+      args+=("$1")
+      shift
+      ;;
+    --llama-model)
+      if (($# < 2)); then
+        echo "llama-codex: $1 requires a model value" >&2
+        exit 2
+      fi
+      model="$2"
+      shift 2
+      ;;
+    --llama-model=*)
+      model="${1#--llama-model=}"
+      shift
+      ;;
+    --llama-context)
+      if (($# < 2)); then
+        echo "llama-codex: $1 requires a context window value" >&2
+        exit 2
+      fi
+      context_window="$2"
+      shift 2
+      ;;
+    --llama-context=*)
+      context_window="${1#--llama-context=}"
+      shift
+      ;;
+    --llama-status)
+      mkdir -p "${cache_dir}"
+      echo "model=${model}"
+      echo "context_window=${context_window}"
+      echo "ollama_url=${ollama_url}"
+      echo "proxy_url=${proxy_url}"
+      echo "ollama_num_parallel=${ollama_num_parallel}"
+      echo "ollama_max_loaded_models=${ollama_max_loaded_models}"
+      echo "model_catalog=${model_catalog}"
+      exit 0
+      ;;
+    --llama-restart)
+      restart_proxy=true
+      shift
+      ;;
+    --llama-stop)
+      stop_proxy=true
+      shift
+      ;;
+    -y|--yes)
+      assume_yes=true
+      shift
+      ;;
+    --llama-help)
+      cat <<'EOF'
+llama-codex wraps Codex with an Ollama compatibility proxy.
+
+Usage:
+  llama-codex --yolo
+  llama-codex init
+  llama-codex init --yes
+  llama-codex doctor
+  llama-codex [codex options]
+  llama-codex -m MODEL [codex options]
+  llama-codex exec "task"
+
+Default:
+  Runs the normal Codex CLI against your local Ollama model.
+
+Llama wrapper options:
+  --llama-model MODEL       Select the Ollama model without passing -m to Codex.
+  --llama-context TOKENS    Set advertised model context window.
+  --llama-status            Print resolved wrapper configuration and exit.
+  --llama-restart           Restart the compatibility proxy before launching Codex.
+  --llama-stop              Stop the compatibility proxy and exit.
+  --llama-help              Show this help and exit.
+  -y, --yes                 Approve supported dependency installs during init.
+
+Codex model options:
+  -m, --model MODEL         Select model for both Codex and the proxy.
+
+Environment:
+  LLAMA_CODEX_MODEL
+  LLAMA_CODEX_CONTEXT_WINDOW
+  LLAMA_CODEX_OLLAMA_URL
+  LLAMA_CODEX_PROXY_HOST
+  LLAMA_CODEX_PROXY_PORT
+  LLAMA_CODEX_OLLAMA_NUM_PARALLEL
+  LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS
+  LLAMA_CODEX_LOG_DIR
+  LLAMA_CODEX_CACHE_DIR
+EOF
+      exit 0
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+install_hint() {
+  case "$1" in
+    codex)
+      echo "npm install -g @openai/codex"
+      ;;
+    ollama)
+      echo "brew install ollama"
+      ;;
+    python3)
+      echo "brew install python"
+      ;;
+    curl)
+      echo "brew install curl"
+      ;;
+  esac
+}
+
+install_dep() {
+  local cmd="$1"
+  local install_cmd
+  install_cmd="$(install_hint "${cmd}")"
+
+  if command_exists "${cmd}"; then
+    return 0
+  fi
+
+  echo "missing: ${cmd}"
+  echo "install: ${install_cmd}"
+
+  if [[ "${assume_yes}" != true ]]; then
+    if [[ ! -t 0 ]]; then
+      echo "llama-codex: non-interactive shell; rerun with 'llama-codex init --yes' or install manually" >&2
+      return 1
+    fi
+    read -r -p "Install ${cmd}? [y/N] " answer
+    case "${answer}" in
+      y|Y|yes|YES)
+        ;;
+      *)
+        echo "skip: ${cmd}"
+        return 1
+        ;;
+    esac
+  fi
+
+  case "$cmd" in
+    codex)
+      if ! command_exists npm; then
+        echo "llama-codex: npm is required to install codex" >&2
+        return 1
+      fi
+      npm install -g @openai/codex
+      ;;
+    ollama|python3|curl)
+      if ! command_exists brew; then
+        echo "llama-codex: Homebrew is required to install ${cmd}" >&2
+        return 1
+      fi
+      case "$cmd" in
+        ollama) brew install ollama ;;
+        python3) brew install python ;;
+        curl) brew install curl ;;
+      esac
+      ;;
+  esac
+}
+
+ensure_init_deps() {
+  local failed=0
+  for cmd in curl python3 ollama codex; do
+    if ! install_dep "${cmd}"; then
+      failed=1
+    fi
+  done
+  if [[ "${failed}" -ne 0 ]]; then
+    echo "llama-codex: install missing dependencies, then rerun: llama-codex init" >&2
+    exit 1
+  fi
+}
+
+require_cmd() {
+  if ! command_exists "$1"; then
+    echo "llama-codex: $1 is not installed or not on PATH" >&2
+    echo "llama-codex: run first: llama-codex init" >&2
+    exit 127
+  fi
+}
+
+wait_for_url() {
+  local url="$1"
+  for _ in {1..80}; do
+    if curl -fsS "${url}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+proxy_model() {
+  curl -fsS "${proxy_url}/api/tags" 2>/dev/null \
+    | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["models"][0].get("model") or data["models"][0].get("name") or "")' 2>/dev/null \
+    || true
+}
+
+proxy_context_window() {
+  curl -fsS "${proxy_url}/api/tags" 2>/dev/null \
+    | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["models"][0].get("context_window") or "")' 2>/dev/null \
+    || true
+}
+
+model_installed() {
+  ollama list 2>/dev/null | awk 'NR > 1 {print $1}' | grep -Fxq "${model}"
+}
+
+start_ollama() {
+  if curl -fsS "${ollama_url}/api/version" >/dev/null 2>&1; then
+    return 0
+  fi
+  OLLAMA_NUM_PARALLEL="${ollama_num_parallel}" \
+    OLLAMA_MAX_LOADED_MODELS="${ollama_max_loaded_models}" \
+    nohup ollama serve >>"${log_dir}/llama-codex-ollama.log" 2>&1 &
+  wait_for_url "${ollama_url}/api/version"
+}
+
+warn_large_context() {
+  if [[ "${context_window}" =~ ^[0-9]+$ ]] && ((context_window > 16384)); then
+    echo "llama-codex: warning: context ${context_window} can put heavy memory pressure on local models" >&2
+    echo "llama-codex: use --llama-context 8192 if the system becomes unstable" >&2
+  fi
+}
+
+kill_proxy_on_port() {
+  if [[ -f "${pid_file}" ]]; then
+    local pid
+    pid="$(cat "${pid_file}" 2>/dev/null || true)"
+    if [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1; then
+      kill "${pid}" >/dev/null 2>&1 || true
+      sleep 0.3
+    fi
+    rm -f "${pid_file}"
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    local pids
+    pids="$(lsof -tiTCP:"${proxy_port}" -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "${pids}" ]]; then
+      kill ${pids} >/dev/null 2>&1 || true
+      sleep 0.3
+    fi
+  fi
+}
+
+write_model_catalog() {
+  mkdir -p "${cache_dir}"
+  python3 - "$model" "$context_window" "$model_catalog" <<'PY'
+import json
+import sys
+
+model, context_window, path = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+data = {
+    "models": [
+        {
+            "base_instructions": "",
+            "context_window": context_window,
+            "default_verbosity": "low",
+            "display_name": model,
+            "experimental_supported_tools": [],
+            "input_modalities": ["text"],
+            "priority": 0,
+            "shell_type": "default",
+            "slug": model,
+            "support_verbosity": True,
+            "supported_in_api": True,
+            "supported_reasoning_levels": [],
+            "supports_parallel_tool_calls": False,
+            "supports_reasoning_summaries": False,
+            "truncation_policy": {"limit": 10000, "mode": "bytes"},
+            "visibility": "list",
+        }
+    ]
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, indent=2)
+    handle.write("\n")
+PY
+}
+
+ensure_proxy() {
+  local running_model
+  local running_context_window
+
+  running_model="$(proxy_model)"
+  running_context_window="$(proxy_context_window)"
+  if [[ "${restart_proxy}" == true ]] || \
+    [[ -n "${running_model}" && "${running_model}" != "${model}" ]] || \
+    [[ -n "${running_context_window}" && "${running_context_window}" != "${context_window}" ]]; then
+    kill_proxy_on_port
+  fi
+
+  if ! curl -fsS "${proxy_url}/api/tags" >/dev/null 2>&1; then
+    nohup "${proxy_script}" \
+      --host "${proxy_host}" \
+      --port "${proxy_port}" \
+      --backend "${ollama_url}" \
+      --model "${model}" \
+      --context-window "${context_window}" \
+      >>"${log_dir}/llama-codex-proxy.log" 2>&1 &
+    echo "$!" >"${pid_file}"
+
+    if ! wait_for_url "${proxy_url}/api/tags"; then
+      echo "llama-codex: could not start compatibility proxy at ${proxy_url}" >&2
+      exit 1
+    fi
+  fi
+}
+
+doctor() {
+  local failed=0
+  echo "llama-codex doctor"
+  echo
+
+  for cmd in curl python3 ollama codex; do
+    if command_exists "${cmd}"; then
+      echo "ok   ${cmd}: $(command -v "${cmd}")"
+    else
+      echo "fail ${cmd}: missing from PATH"
+      failed=1
+    fi
+  done
+
+  if command_exists codex; then
+    echo "ok   codex version: $(codex --version 2>/dev/null || echo unknown)"
+  fi
+
+  if command_exists ollama && curl -fsS "${ollama_url}/api/version" >/dev/null 2>&1; then
+    echo "ok   ollama server: ${ollama_url}"
+  else
+    echo "fail ollama server: not reachable at ${ollama_url}"
+    failed=1
+  fi
+
+  if command_exists ollama && model_installed; then
+    echo "ok   model installed: ${model}"
+  else
+    echo "fail model installed: ${model}"
+    echo "     run: llama-codex init"
+    failed=1
+  fi
+
+  if [[ -f "${model_catalog}" ]]; then
+    echo "ok   model catalog: ${model_catalog}"
+  else
+    echo "fail model catalog: missing at ${model_catalog}"
+    echo "     run: llama-codex init"
+    failed=1
+  fi
+
+  local running_model
+  local running_context_window
+  running_model="$(proxy_model)"
+  running_context_window="$(proxy_context_window)"
+  if [[ "${running_model}" == "${model}" && "${running_context_window}" == "${context_window}" ]]; then
+    echo "ok   proxy: ${proxy_url} (${running_model}, ctx ${running_context_window})"
+  else
+    echo "fail proxy: not ready for ${model} ctx ${context_window}"
+    echo "     run: llama-codex init"
+    failed=1
+  fi
+
+  return "${failed}"
+}
+
+init() {
+  ensure_init_deps
+
+  mkdir -p "${log_dir}" "${cache_dir}"
+  write_model_catalog
+
+  echo "llama-codex init"
+  echo "model: ${model}"
+  echo "context: ${context_window}"
+  echo "ollama parallelism: ${ollama_num_parallel}"
+  echo "ollama max loaded models: ${ollama_max_loaded_models}"
+  echo
+  warn_large_context
+
+  if ! start_ollama; then
+    echo "llama-codex: could not start Ollama at ${ollama_url}" >&2
+    exit 1
+  fi
+  echo "ok   ollama server: ${ollama_url}"
+
+  if model_installed; then
+    echo "ok   model already installed"
+  else
+    echo "pull model: ${model}"
+    ollama pull "${model}"
+  fi
+
+  ensure_proxy
+  echo "ok   proxy: ${proxy_url}"
+  echo "ok   model catalog: ${model_catalog}"
+  echo
+  doctor
+}
+
+mkdir -p "${log_dir}" "${cache_dir}"
+write_model_catalog
+warn_large_context
+
+if [[ "${action}" == "doctor" ]]; then
+  doctor
+  exit $?
+fi
+
+if [[ "${action}" == "init" ]]; then
+  init
+  exit $?
+fi
+
+if [[ "${stop_proxy}" == true ]]; then
+  kill_proxy_on_port
+  echo "llama-codex: stopped proxy on ${proxy_url}"
+  exit 0
+fi
+
+require_cmd curl
+require_cmd python3
+require_cmd ollama
+require_cmd codex
+
+if ! start_ollama; then
+  echo "llama-codex: could not start Ollama at ${ollama_url}" >&2
+  exit 1
+fi
+
+if ! model_installed; then
+  echo "llama-codex: model is not installed: ${model}" >&2
+  echo "llama-codex: run first: llama-codex init" >&2
+  exit 1
+fi
+
+ensure_proxy
+
+exec codex \
+  -c "model=\"${model}\"" \
+  -c 'model_provider="ollama-launch"' \
+  -c "model_catalog_json=\"${model_catalog}\"" \
+  -c 'model_providers.ollama-launch.name="Ollama"' \
+  -c "model_providers.ollama-launch.base_url=\"${proxy_url}/v1/\"" \
+  -c 'model_providers.ollama-launch.wire_api="responses"' \
+  "${args[@]}"
