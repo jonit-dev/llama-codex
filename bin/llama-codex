@@ -16,7 +16,7 @@ proxy_script="${project_root}/src/ollama_codex_proxy.py"
 
 default_model="hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-Q4_K_XL"
 model="${LLAMA_CODEX_MODEL:-${default_model}}"
-context_window="${LLAMA_CODEX_CONTEXT_WINDOW:-8192}"
+context_window="${LLAMA_CODEX_CONTEXT_WINDOW:-65536}"
 ollama_url="${LLAMA_CODEX_OLLAMA_URL:-http://127.0.0.1:11434}"
 proxy_host="${LLAMA_CODEX_PROXY_HOST:-127.0.0.1}"
 proxy_port="${LLAMA_CODEX_PROXY_PORT:-11435}"
@@ -27,6 +27,8 @@ pid_file="${cache_dir}/proxy-${proxy_port}.pid"
 model_catalog="${cache_dir}/model-${proxy_port}.json"
 ollama_num_parallel="${LLAMA_CODEX_OLLAMA_NUM_PARALLEL:-${OLLAMA_NUM_PARALLEL:-1}}"
 ollama_max_loaded_models="${LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS:-${OLLAMA_MAX_LOADED_MODELS:-1}}"
+default_deny_tool_pattern='^(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource|tool_search_tool)$'
+deny_tool_pattern="${LLAMA_CODEX_DENY_TOOL_PATTERN:-${default_deny_tool_pattern}}"
 restart_proxy=false
 stop_proxy=false
 action="run"
@@ -85,6 +87,7 @@ while (($#)); do
       echo "proxy_url=${proxy_url}"
       echo "ollama_num_parallel=${ollama_num_parallel}"
       echo "ollama_max_loaded_models=${ollama_max_loaded_models}"
+      echo "deny_tool_pattern=${deny_tool_pattern}"
       echo "model_catalog=${model_catalog}"
       exit 0
       ;;
@@ -136,6 +139,7 @@ Environment:
   LLAMA_CODEX_PROXY_PORT
   LLAMA_CODEX_OLLAMA_NUM_PARALLEL
   LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS
+  LLAMA_CODEX_DENY_TOOL_PATTERN
   LLAMA_CODEX_LOG_DIR
   LLAMA_CODEX_CACHE_DIR
 EOF
@@ -263,6 +267,12 @@ proxy_context_window() {
     || true
 }
 
+proxy_deny_tool_pattern() {
+  curl -fsS "${proxy_url}/api/tags" 2>/dev/null \
+    | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["models"][0].get("deny_tool_pattern") or "")' 2>/dev/null \
+    || true
+}
+
 model_installed() {
   ollama list 2>/dev/null | awk 'NR > 1 {print $1}' | grep -Fxq "${model}"
 }
@@ -343,12 +353,15 @@ PY
 ensure_proxy() {
   local running_model
   local running_context_window
+  local running_deny_tool_pattern
 
   running_model="$(proxy_model)"
   running_context_window="$(proxy_context_window)"
+  running_deny_tool_pattern="$(proxy_deny_tool_pattern)"
   if [[ "${restart_proxy}" == true ]] || \
     [[ -n "${running_model}" && "${running_model}" != "${model}" ]] || \
-    [[ -n "${running_context_window}" && "${running_context_window}" != "${context_window}" ]]; then
+    [[ -n "${running_context_window}" && "${running_context_window}" != "${context_window}" ]] || \
+    [[ -n "${running_deny_tool_pattern}" && "${running_deny_tool_pattern}" != "${deny_tool_pattern}" ]]; then
     kill_proxy_on_port
   fi
 
@@ -359,6 +372,7 @@ ensure_proxy() {
       --backend "${ollama_url}" \
       --model "${model}" \
       --context-window "${context_window}" \
+      --deny-tool-pattern "${deny_tool_pattern}" \
       >>"${log_dir}/llama-codex-proxy.log" 2>&1 &
     echo "$!" >"${pid_file}"
 
@@ -436,6 +450,7 @@ init() {
   echo "context: ${context_window}"
   echo "ollama parallelism: ${ollama_num_parallel}"
   echo "ollama max loaded models: ${ollama_max_loaded_models}"
+  echo "denied tools: ${deny_tool_pattern}"
   echo
   warn_large_context
 

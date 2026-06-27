@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +44,7 @@ def model_metadata(model, context_window):
 
 
 def parse_tool_text(text, allowed_names):
+    text = normalize_model_text(text)
     candidates = []
     for match in re.finditer(r"<(?:tools?|tool_call)>\s*(\{.*?\})\s*</(?:tools?|tool_call)>", text, re.DOTALL):
         candidates.append(match.group(1))
@@ -74,7 +76,33 @@ def parse_tool_text(text, allowed_names):
     return None
 
 
+def normalize_model_text(text):
+    if not isinstance(text, str):
+        return text
+    text = re.sub(r"<\|channel\>\s*thought\s*", "", text)
+    text = re.sub(r"<channel\|>\s*", "", text)
+    text = re.sub(r"</?channel>\s*", "", text)
+    return text.strip()
+
+
+def normalize_response_text(data):
+    output = data.get("output")
+    if not isinstance(output, list):
+        return data
+    for item in output:
+        if item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") == "output_text" and isinstance(part.get("text"), str):
+                part["text"] = normalize_model_text(part["text"])
+    return data
+
+
 def translate_tool_text_response(data, allowed_names):
+    data = normalize_response_text(data)
     output = data.get("output")
     if not isinstance(output, list):
         return data
@@ -129,6 +157,13 @@ def tool_name(tool):
     return None
 
 
+def tool_denied(name, pattern):
+    if not name or not pattern:
+        return False
+    short_name = name.rsplit(".", 1)[-1]
+    return bool(re.search(pattern, name) or re.search(pattern, short_name))
+
+
 class Proxy(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -159,6 +194,7 @@ class Proxy(BaseHTTPRequestHandler):
                             "name": self.server.model,
                             "model": self.server.model,
                             "context_window": self.server.context_window,
+                            "deny_tool_pattern": self.server.deny_tool_pattern,
                         }
                     ]
                 },
@@ -177,13 +213,19 @@ class Proxy(BaseHTTPRequestHandler):
             allowed_tool_names = set()
             if isinstance(tools, list):
                 before = len(tools)
-                payload["tools"] = [tool for tool in tools if tool.get("type") == "function"]
+                payload["tools"] = [
+                    tool for tool in tools
+                    if tool.get("type") == "function" and not tool_denied(tool_name(tool), self.server.deny_tool_pattern)
+                ]
                 allowed_tool_names = {name for name in (tool_name(tool) for tool in payload["tools"]) if name}
                 if allowed_tool_names:
                     self.log_message("allowed function tools: %s", ",".join(sorted(allowed_tool_names)))
-                removed = before - len(payload["tools"])
-                if removed:
-                    self.log_message("removed %d unsupported non-function tool(s)", removed)
+                removed_unsupported = sum(1 for tool in tools if tool.get("type") != "function")
+                removed_denied = before - removed_unsupported - len(payload["tools"])
+                if removed_unsupported:
+                    self.log_message("removed %d unsupported non-function tool(s)", removed_unsupported)
+                if removed_denied:
+                    self.log_message("removed %d denied function tool(s)", removed_denied)
             self.forward(payload, allowed_tool_names=allowed_tool_names, stream_response=stream_response)
             return
         self.forward(read_json(self))
@@ -227,12 +269,14 @@ def main():
     parser.add_argument("--backend", default="http://127.0.0.1:11434")
     parser.add_argument("--model", required=True)
     parser.add_argument("--context-window", type=int, default=32768)
+    parser.add_argument("--deny-tool-pattern", default=os.environ.get("LLAMA_CODEX_DENY_TOOL_PATTERN", ""))
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), Proxy)
     server.backend = args.backend
     server.model = args.model
     server.context_window = args.context_window
+    server.deny_tool_pattern = args.deny_tool_pattern
     print(f"ollama-codex-proxy listening on http://{args.host}:{args.port} -> {args.backend}", flush=True)
     server.serve_forever()
 
