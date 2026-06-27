@@ -91,6 +91,7 @@ deny_tool_pattern="${LLAMA_CODEX_DENY_TOOL_PATTERN:-}"
 reject_shell_writes="${LLAMA_CODEX_REJECT_SHELL_WRITES:-1}"
 verify_command="${LLAMA_CODEX_VERIFY_COMMAND:-}"
 verify_retries="${LLAMA_CODEX_VERIFY_RETRIES:-0}"
+retry_context_bytes="${LLAMA_CODEX_RETRY_CONTEXT_BYTES:-45000}"
 restart_proxy=false
 stop_proxy=false
 action="run"
@@ -207,6 +208,7 @@ while (($#)); do
       echo "reject_shell_writes=${reject_shell_writes}"
       echo "verify_command=${verify_command}"
       echo "verify_retries=${verify_retries}"
+      echo "retry_context_bytes=${retry_context_bytes}"
       echo "base_instructions_source=${base_instructions_source}"
       echo "env_file=${env_file}"
       echo "model_catalog=${model_catalog}"
@@ -726,6 +728,107 @@ with open(output, "w", encoding="utf-8") as handle:
 PY
 }
 
+retry_context_snapshot() {
+  python3 - "$PWD" "$retry_context_bytes" <<'PY'
+import os
+import sys
+
+root = sys.argv[1]
+try:
+    budget = max(0, int(sys.argv[2]))
+except ValueError:
+    budget = 0
+
+if budget <= 0:
+    raise SystemExit(0)
+
+skip_dirs = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".next",
+    ".nuxt",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "coverage",
+    "dist",
+    "build",
+    "node_modules",
+    "target",
+}
+content_exts = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".css",
+    ".go",
+    ".h",
+    ".hpp",
+    ".html",
+    ".java",
+    ".js",
+    ".json",
+    ".jsx",
+    ".md",
+    ".py",
+    ".rs",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml",
+}
+content_names = {"README", "README.md", "Makefile", "package.json", "pyproject.toml"}
+paths = []
+for current, dirs, files in os.walk(root):
+    dirs[:] = [name for name in dirs if name not in skip_dirs and not name.startswith(".")]
+    for name in files:
+        if name.startswith("."):
+            continue
+        path = os.path.join(current, name)
+        rel = os.path.relpath(path, root)
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        paths.append((rel, size))
+
+paths.sort()
+lines = ["Workspace context snapshot:", "Files:"]
+for rel, size in paths[:200]:
+    lines.append(f"- {rel} ({size} bytes)")
+remaining = budget - len("\n".join(lines).encode("utf-8")) - 2
+
+for rel, size in paths:
+    if remaining <= 0:
+        break
+    name = os.path.basename(rel)
+    ext = os.path.splitext(name)[1]
+    if ext not in content_exts and name not in content_names:
+        continue
+    if size > 12000:
+        continue
+    path = os.path.join(root, rel)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except (OSError, UnicodeDecodeError):
+        continue
+    block = f"\n--- {rel} ---\n{content}"
+    encoded = block.encode("utf-8")
+    if len(encoded) > remaining:
+        continue
+    lines.append(block)
+    remaining -= len(encoded)
+
+print("\n".join(lines))
+PY
+}
+
 run_with_optional_verification() {
   if [[ -z "${verify_command}" ]]; then
     exec codex \
@@ -792,9 +895,12 @@ ${verify_command}
 Verification output:
 $(sed -n '1,50p' "${clean_verify_output}")
 
+$(retry_context_snapshot)
+
 $(if [[ "${no_workspace_changes}" == true ]]; then cat <<'NOCHANGE'
 Premature stop detected: the previous attempt made no workspace file changes before verification.
-Do not explain the fix first. Do not re-read files unless needed for exact patch context.
+The current workspace context is included above. Do not re-read files.
+Do not explain the fix first.
 Your first command in the next turn must be an apply_patch heredoc that changes an implementation file.
 NOCHANGE
 fi)
@@ -804,19 +910,8 @@ Do not answer in prose or say what you will do next.
 Your next assistant turn must call exec_command.
 Do not put exec_command(...) text inside the shell command; the shell command must be plain shell such as apply_patch, npm test, sed -n, or cat.
 Do not run rm, unlink, touch, sed -i, Python file writers, cat heredocs, tee, or shell redirects for source edits.
-If the implementation file is still a stub, missing, or mostly unchanged, use the full-file replacement form. Do not attempt an Update hunk against code that is not currently present.
+Use full-file replacement for stub, missing, or mostly unchanged implementation files. Do not use Update File hunks in this recovery turn.
 Use exec_command to run apply_patch with this exact shape:
-apply_patch <<'PATCH'
-*** Begin Patch
-*** Update File: path/to/file
-@@
- unchanged context line
--removed line
-+added line
-*** End Patch
-PATCH
-Every unchanged context line in an Update hunk must start with one space.
-If you cannot produce a valid Update hunk, use this full-file replacement form instead:
 apply_patch <<'PATCH'
 *** Begin Patch
 *** Delete File: path/to/file

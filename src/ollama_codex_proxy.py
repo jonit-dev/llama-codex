@@ -157,6 +157,7 @@ def replace_file_patch(path, content):
 
 
 def apply_patch_command(patch):
+    patch = repair_add_file_content_lines(patch)
     delimiter = patch_delimiter(patch)
     return f"apply_patch <<'{delimiter}'\n{patch}\n{delimiter}"
 
@@ -179,6 +180,7 @@ def shorthand_patch_command(patch):
 
 
 def apply_patch_compat_command(patch):
+    patch = repair_add_file_content_lines(patch)
     shorthand = shorthand_patch_command(patch)
     if shorthand:
         return shorthand
@@ -192,7 +194,12 @@ def apply_patch_compat_command(patch):
             patch,
             delimiter,
             "sed '/^\\*\\*\\* /d' \"$patch_file\" >\"$clean_patch_file\"",
-            "apply_patch <\"$patch_file\" || patch -p1 <\"$clean_patch_file\" || patch -p0 <\"$clean_patch_file\"",
+            (
+                "apply_patch <\"$patch_file\" || "
+                "git apply --recount --whitespace=nowarn \"$clean_patch_file\" || "
+                "patch --batch -p1 <\"$clean_patch_file\" || "
+                "patch --batch -p0 <\"$clean_patch_file\""
+            ),
             "rc=$?",
             "rm -f \"$patch_file\" \"$clean_patch_file\"",
             "exit $rc",
@@ -209,6 +216,29 @@ def is_patch_text(value):
         or stripped.startswith("diff --git ")
         or stripped.startswith("--- ")
     )
+
+
+def repair_add_file_content_lines(patch):
+    if not isinstance(patch, str) or "*** Add File:" not in patch:
+        return patch
+    repaired = []
+    in_add_file = False
+    for line in patch.splitlines():
+        if line.startswith("*** Add File:"):
+            in_add_file = True
+            repaired.append(line)
+            continue
+        if line.startswith("*** "):
+            in_add_file = False
+            repaired.append(line)
+            continue
+        if in_add_file and not line.startswith("+"):
+            repaired.append("+" + line)
+            continue
+        repaired.append(line)
+    if patch.endswith("\n"):
+        return "\n".join(repaired) + "\n"
+    return "\n".join(repaired)
 
 
 def extract_patch_argument(arguments):
@@ -228,6 +258,15 @@ def extract_patch_argument(arguments):
         if is_patch_text(value):
             return value
     return None
+
+
+def extract_embedded_apply_patch(text):
+    if not isinstance(text, str):
+        return None
+    match = re.search(r"\*\*\* Begin Patch\b.*?\n\*\*\* End Patch\b", text, re.DOTALL)
+    if not match:
+        return None
+    return match.group(0).strip()
 
 
 def translate_apply_patch_call(name, arguments, allowed_names):
@@ -415,12 +454,38 @@ def malformed_apply_patch_command(cmd):
     )
 
 
+def rewrite_apply_patch_heredoc_command(cmd):
+    match = re.match(
+        r"^\s*apply_patch\s*<<\s*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_-]*)\1\s*\n",
+        cmd,
+    )
+    if not match:
+        return None
+    delimiter = match.group("delimiter")
+    rest = cmd[match.end():]
+    lines = rest.splitlines()
+    try:
+        first_delimiter_index = lines.index(delimiter)
+    except ValueError:
+        return None
+    body_lines = lines[:first_delimiter_index]
+    if any(line.strip() == "*** End Patch" for line in body_lines):
+        return None
+    tail_lines = lines[first_delimiter_index + 1:]
+    for tail_index, line in enumerate(tail_lines):
+        if line.strip() != "*** End Patch":
+            continue
+        repaired = "\n".join([*body_lines, line])
+        return apply_patch_command(repaired)
+    return None
+
+
 def rewrite_apply_patch_shell_command(cmd):
     stripped = cmd.lstrip()
     if not stripped.startswith("apply_patch"):
         return None
     if re.match(r"^\s*apply_patch\s*(?:<<|<)\s*", cmd):
-        return None
+        return rewrite_apply_patch_heredoc_command(cmd)
     try:
         parts = shlex.split(cmd)
     except ValueError:
@@ -535,6 +600,27 @@ def force_patch_first_command(arguments):
         return arguments
     stripped = cmd.lstrip()
     if stripped.startswith("apply_patch") or "llama-codex apply_patch compatibility" in cmd:
+        if "*** Update File:" in cmd and "*** Delete File:" not in cmd:
+            message = (
+                "llama-codex proxy rejected update-hunk patch during forced recovery: "
+                "use full-file replacement with *** Delete File followed by *** Add File."
+            )
+            example = (
+                "required command shape: apply_patch <<'PATCH'\\n"
+                "*** Begin Patch\\n"
+                "*** Delete File: path/to/file\\n"
+                "*** Add File: path/to/file\\n"
+                "+full corrected file line\\n"
+                "*** End Patch\\n"
+                "PATCH"
+            )
+            data["cmd"] = (
+                "printf '%s\\n' "
+                f"{shlex.quote(message)} "
+                f"{shlex.quote(example)} "
+                ">&2; exit 2"
+            )
+            return json.dumps(data)
         return arguments
     message = (
         "llama-codex proxy rejected diagnostic command during forced patch recovery: "
@@ -558,6 +644,28 @@ def force_patch_first_command(arguments):
         ">&2; exit 2"
     )
     return json.dumps(data)
+
+
+def force_patch_first_missing_tool_command():
+    message = (
+        "llama-codex proxy rejected forced patch recovery response: "
+        "no tool call was made; the first action must be exec_command running an apply_patch heredoc."
+    )
+    example = (
+        "required command shape: apply_patch <<'PATCH'\\n"
+        "*** Begin Patch\\n"
+        "*** Delete File: path/to/file\\n"
+        "*** Add File: path/to/file\\n"
+        "+full corrected file line\\n"
+        "*** End Patch\\n"
+        "PATCH"
+    )
+    return (
+        "printf '%s\\n' "
+        f"{shlex.quote(message)} "
+        f"{shlex.quote(example)} "
+        ">&2; exit 2"
+    )
 
 
 def payload_requests_force_patch_first(value):
@@ -660,6 +768,36 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
         parsed = parse_tool_text(text, set(allowed_names) | {"apply_patch"})
         if not parsed:
             exec_name = next((candidate for candidate in allowed_names if candidate.rsplit(".", 1)[-1] == "exec_command"), None)
+            embedded_patch = extract_embedded_apply_patch(text)
+            if exec_name and embedded_patch:
+                call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
+                cmd = apply_patch_compat_command(embedded_patch)
+                if force_patch_first and "*** Update File:" in embedded_patch and "*** Delete File:" not in embedded_patch:
+                    cmd = force_patch_first_command(json.dumps({"cmd": cmd}))
+                    try:
+                        cmd = json.loads(cmd)["cmd"]
+                    except (TypeError, json.JSONDecodeError, KeyError):
+                        pass
+                output[index] = {
+                    "id": "fc_" + call_id.removeprefix("call_"),
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": exec_name,
+                    "arguments": json.dumps({"cmd": cmd}),
+                }
+                return data
+            if exec_name and force_patch_first:
+                call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
+                output[index] = {
+                    "id": "fc_" + call_id.removeprefix("call_"),
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": exec_name,
+                    "arguments": json.dumps({"cmd": force_patch_first_missing_tool_command()}),
+                }
+                return data
             premature_command = premature_prose_command(text)
             if exec_name and premature_command:
                 call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")

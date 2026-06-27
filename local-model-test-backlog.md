@@ -78,6 +78,20 @@ produce a valid implementation. Treat this as evidence that prompt/harness
 guards are improving safety, not enough to make `llama-codex` the default
 greenfield SWE harness over `aider diff-fenced`.
 
+Later bookmark-vault iterations improved that result but did not flip the
+verdict. After adding retry workspace snapshots, raw patch-block translation,
+full-file replacement enforcement during no-change recovery,
+`git apply --recount` fallback, missing `+` repair in `Add File` patches,
+heredoc-close repair, and increasing `LLAMA_CODEX_MAX_OUTPUT_TOKENS` to 4096,
+Qwen generated a substantial `bookmarks/vault.py` implementation. The CLI test
+passed, but two library tests still failed: nested tag lists were shallow-copied
+and validation messages used uppercase `URL`/`Title` instead of matching
+`url`/`title`. Qwen diagnosed both bugs but kept failing the edit channel with
+unsupported native `apply_patch`, bad hunks, `sed -i`, `rm`, and prose stops.
+Current conclusion: these patches materially improve recovery, but
+`llama-codex` remains below `aider diff-fenced` as the default greenfield
+harness for this Qwen model.
+
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
 ## Cleanup Findings

@@ -266,6 +266,7 @@ def test_translates_native_apply_patch_call_to_exec_command():
     data = json.loads(item["arguments"])
     assert "llama-codex apply_patch compatibility" in data["cmd"]
     assert "apply_patch <\"$patch_file\"" in data["cmd"]
+    assert "git apply --recount" in data["cmd"]
     assert "*** Add File: a.txt" in data["cmd"]
 
 
@@ -335,7 +336,8 @@ def test_translates_unified_diff_apply_patch_to_compat_command():
     assert item["name"] == "exec_command"
     data = json.loads(item["arguments"])
     assert "llama-codex apply_patch compatibility" in data["cmd"]
-    assert "patch -p1" in data["cmd"]
+    assert "git apply --recount" in data["cmd"]
+    assert "patch --batch -p1" in data["cmd"]
     assert "--- /dev/null" in data["cmd"]
 
 
@@ -478,6 +480,136 @@ def test_force_patch_first_allows_apply_patch_command():
     assert data["cmd"].startswith("apply_patch <<")
 
 
+def test_force_patch_first_rejects_update_hunk_patch():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": (
+                            "apply_patch <<'PATCH'\n"
+                            "*** Begin Patch\n"
+                            "*** Update File: a.txt\n"
+                            "@@\n"
+                            "-old\n"
+                            "+new\n"
+                            "*** End Patch\n"
+                            "PATCH"
+                        )
+                    }
+                ),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        force_patch_first=True,
+    )
+    data = json.loads(translated["output"][0]["arguments"])
+    assert "rejected update-hunk patch during forced recovery" in data["cmd"]
+    assert "*** Delete File" in data["cmd"]
+
+
+def test_repairs_unprefixed_add_file_lines():
+    command = proxy.apply_patch_compat_command(
+        "*** Begin Patch\n"
+        "*** Delete File: a.py\n"
+        "*** Add File: a.py\n"
+        "+def one():\n"
+        "    return 1\n"
+        "*** End Patch"
+    )
+    assert "+def one():" in command
+    assert "+    return 1" in command
+
+
+def test_repairs_apply_patch_heredoc_closed_before_end_patch():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps(
+            {
+                "cmd": (
+                    "apply_patch <<'PATCH'\n"
+                    "*** Begin Patch\n"
+                    "*** Add File: a.py\n"
+                    "+ok = True\n"
+                    "PATCH\n"
+                    "*** End Patch\n"
+                    "PATCH"
+                )
+            }
+        ),
+        True,
+    )
+    data = json.loads(arguments)
+    assert data["cmd"].startswith("apply_patch <<")
+    assert "*** End Patch\n" in data["cmd"]
+    assert "PATCH\n*** End Patch" not in data["cmd"]
+
+
+def test_translates_embedded_patch_text_to_exec_command():
+    response = {
+        "id": "resp-test",
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": (
+                            "Here is the patch:\n\n"
+                            "*** Begin Patch\n"
+                            "*** Add File: a.txt\n"
+                            "+ok\n"
+                            "*** End Patch\n"
+                        ),
+                    }
+                ],
+            }
+        ],
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        force_patch_first=True,
+    )
+    item = translated["output"][0]
+    assert item["type"] == "function_call"
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "*** Add File: a.txt" in data["cmd"]
+    assert "llama-codex apply_patch compatibility" in data["cmd"]
+
+
+def test_force_patch_first_rejects_missing_tool_message():
+    response = {
+        "id": "resp-test",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": ""}],
+            }
+        ],
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        force_patch_first=True,
+    )
+    item = translated["output"][0]
+    assert item["type"] == "function_call"
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "no tool call was made" in data["cmd"]
+    assert "apply_patch" in data["cmd"]
+
+
 if __name__ == "__main__":
     test_parse_qwen_tool_call_suffix()
     test_ignores_disallowed_tool()
@@ -513,4 +645,9 @@ if __name__ == "__main__":
     test_detects_force_patch_first_prompt()
     test_force_patch_first_rejects_diagnostic_exec_command()
     test_force_patch_first_allows_apply_patch_command()
+    test_force_patch_first_rejects_update_hunk_patch()
+    test_repairs_unprefixed_add_file_lines()
+    test_repairs_apply_patch_heredoc_closed_before_end_patch()
+    test_translates_embedded_patch_text_to_exec_command()
+    test_force_patch_first_rejects_missing_tool_message()
     print("proxy parser tests passed")
