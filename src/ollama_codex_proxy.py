@@ -181,6 +181,9 @@ def shorthand_patch_command(patch):
 
 def apply_patch_compat_command(patch):
     patch = repair_wrapped_unified_diff(patch)
+    unified_add = unified_add_file_command(patch)
+    if unified_add:
+        return unified_add
     patch = repair_add_file_content_lines(patch)
     shorthand = shorthand_patch_command(patch)
     if shorthand:
@@ -272,6 +275,48 @@ def repair_wrapped_unified_diff(patch):
         else:
             repaired.append(line)
     return "\n".join(repaired)
+
+
+def normalize_unified_diff_path(path):
+    path = path.strip()
+    if path == "/dev/null":
+        return path
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
+
+
+def unified_add_file_command(patch):
+    if not isinstance(patch, str):
+        return None
+    lines = patch.splitlines()
+    if len(lines) < 3:
+        return None
+    if lines[0].strip() != "--- /dev/null":
+        return None
+    if not lines[1].startswith("+++ "):
+        return None
+    path = normalize_unified_diff_path(lines[1][4:])
+    if not path or path == "/dev/null":
+        return None
+    content = []
+    saw_hunk = False
+    for line in lines[2:]:
+        if line.startswith("@@ "):
+            saw_hunk = True
+            continue
+        if not saw_hunk:
+            continue
+        if line.startswith("+"):
+            content.append(line[1:])
+            continue
+        if line.startswith("\\ No newline at end of file"):
+            continue
+        if line:
+            return None
+    if not saw_hunk:
+        return None
+    return conditional_apply_patch_command(path, "\n".join(content))
 
 
 def extract_patch_argument(arguments):

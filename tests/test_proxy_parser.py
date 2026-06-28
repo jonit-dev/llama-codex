@@ -353,10 +353,10 @@ def test_translates_unified_diff_apply_patch_to_compat_command():
     item = translated["output"][0]
     assert item["name"] == "exec_command"
     data = json.loads(item["arguments"])
-    assert "llama-codex apply_patch compatibility" in data["cmd"]
-    assert "git apply --recount" in data["cmd"]
-    assert "patch --batch -p1" in data["cmd"]
-    assert "--- /dev/null" in data["cmd"]
+    assert "if [ -e a.txt ]; then" in data["cmd"]
+    assert "*** Delete File: a.txt" in data["cmd"]
+    assert "*** Add File: a.txt" in data["cmd"]
+    assert "+ok" in data["cmd"]
 
 
 def test_repairs_shorthand_apply_patch_header():
@@ -622,6 +622,24 @@ def test_rewrites_wrapped_unified_diff_heredoc_to_compat_command():
     assert "*** Begin Patch" not in data["cmd"].split("cat >\"$patch_file\"", 1)[-1]
 
 
+def test_unified_add_file_patch_becomes_conditional_apply_patch():
+    command = proxy.apply_patch_compat_command(
+        "--- /dev/null\n"
+        "+++ b/bookmarks/vault.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+import json\n"
+        "+\n"
+        "+print('ok')\n"
+        "\\ No newline at end of file"
+    )
+    assert "llama-codex apply_patch compatibility" not in command
+    assert "if [ -e bookmarks/vault.py ]; then" in command
+    assert "*** Delete File: bookmarks/vault.py" in command
+    assert "*** Add File: bookmarks/vault.py" in command
+    assert "+import json" in command
+    assert "+print('ok')" in command
+
+
 def test_repairs_malformed_wrapped_unified_diff_header():
     command = proxy.apply_patch_compat_command(
         "*** Begin Patch\n"
@@ -789,6 +807,7 @@ if __name__ == "__main__":
     test_repairs_unprefixed_add_file_lines()
     test_repairs_apply_patch_heredoc_closed_before_end_patch()
     test_rewrites_wrapped_unified_diff_heredoc_to_compat_command()
+    test_unified_add_file_patch_becomes_conditional_apply_patch()
     test_repairs_malformed_wrapped_unified_diff_header()
     test_repairs_complete_apply_patch_heredoc_missing_add_prefixes()
     test_repairs_apply_patch_heredoc_missing_end_marker()
