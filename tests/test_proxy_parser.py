@@ -479,6 +479,17 @@ def test_detects_force_patch_first_prompt():
     assert not proxy.payload_requests_force_patch_first({"input": "Read files, then patch."})
 
 
+def test_detects_successful_patch_output_in_payload():
+    payload = {
+        "input": [
+            {"content": "Your first tool call in the next turn must be exec_command."},
+            {"type": "function_call_output", "output": "patch: completed\n/path/to/file.py"},
+        ]
+    }
+    assert proxy.payload_requests_force_patch_first(payload)
+    assert proxy.payload_contains_successful_patch_output(payload)
+
+
 def test_force_patch_first_rejects_diagnostic_exec_command():
     response = {
         "output": [
@@ -872,6 +883,7 @@ if __name__ == "__main__":
     test_translates_premature_prose_to_exec_diagnostic()
     test_does_not_translate_completion_prose_to_exec_diagnostic()
     test_detects_force_patch_first_prompt()
+    test_detects_successful_patch_output_in_payload()
     test_force_patch_first_rejects_diagnostic_exec_command()
     test_force_patch_first_allows_apply_patch_command()
     test_force_patch_first_allows_commands_after_patch_in_same_response()

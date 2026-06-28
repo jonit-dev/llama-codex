@@ -897,6 +897,21 @@ def payload_requests_force_patch_first(value):
     )
 
 
+def payload_contains_successful_patch_output(value):
+    if isinstance(value, dict):
+        return any(payload_contains_successful_patch_output(child) for child in value.values())
+    if isinstance(value, list):
+        return any(payload_contains_successful_patch_output(child) for child in value)
+    if not isinstance(value, str):
+        return False
+    normalized = value.lower()
+    return (
+        "patch: completed" in normalized
+        or "success. updated the following files:" in normalized
+        or "successfully applied patch" in normalized
+    )
+
+
 def premature_prose_command(text):
     if not isinstance(text, str):
         return None
@@ -1147,7 +1162,10 @@ class Proxy(BaseHTTPRequestHandler):
                 )
                 payload["options"] = options
             stream_response = bool(payload.get("stream"))
-            force_patch_first = payload_requests_force_patch_first(payload)
+            force_patch_first = (
+                payload_requests_force_patch_first(payload)
+                and not payload_contains_successful_patch_output(payload)
+            )
             payload["stream"] = False
             tools = payload.get("tools")
             allowed_tool_names = set()
