@@ -618,6 +618,7 @@ def test_rewrites_wrapped_unified_diff_heredoc_to_compat_command():
     assert "llama-codex apply_patch compatibility" in data["cmd"]
     assert "git apply --recount" in data["cmd"]
     assert "git apply -p0 --recount" in data["cmd"]
+    assert "patch --batch" not in data["cmd"]
     assert "PY_LLAMACODEX_DIFF" in data["cmd"]
     assert "rest.startswith(prefix)" in data["cmd"]
     assert "grep -q '^\\*\\*\\* Begin Patch'" in data["cmd"]
