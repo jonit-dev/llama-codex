@@ -617,6 +617,7 @@ def test_rewrites_wrapped_unified_diff_heredoc_to_compat_command():
     data = json.loads(arguments)
     assert "llama-codex apply_patch compatibility" in data["cmd"]
     assert "git apply --recount" in data["cmd"]
+    assert "git apply -p0 --recount" in data["cmd"]
     assert "grep -q '^\\*\\*\\* Begin Patch'" in data["cmd"]
     assert "grep -qi '^Invalid patch'" in data["cmd"]
     assert "*** Begin Patch" not in data["cmd"].split("cat >\"$patch_file\"", 1)[-1]

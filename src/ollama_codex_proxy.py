@@ -209,6 +209,7 @@ def apply_patch_compat_command(patch):
             "  fi",
             "fi",
             "git apply --recount --whitespace=nowarn \"$clean_patch_file\" || "
+            "git apply -p0 --recount --whitespace=nowarn \"$clean_patch_file\" || "
             "patch --batch -p1 <\"$clean_patch_file\" || "
             "patch --batch -p0 <\"$clean_patch_file\"",
             "rc=$?",
