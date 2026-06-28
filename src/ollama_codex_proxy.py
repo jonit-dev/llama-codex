@@ -180,6 +180,7 @@ def shorthand_patch_command(patch):
 
 
 def apply_patch_compat_command(patch):
+    patch = sanitize_patch_text(patch)
     patch = repair_wrapped_unified_diff(patch)
     unified_add = unified_add_file_command(patch)
     if unified_add:
@@ -246,6 +247,27 @@ def is_patch_text(value):
         or stripped.startswith("diff --git ")
         or stripped.startswith("--- ")
     )
+
+
+def sanitize_patch_text(patch):
+    if not isinstance(patch, str):
+        return patch
+    lines = patch.strip().splitlines()
+    if not lines:
+        return patch
+    if lines[0].strip() == "*** Begin Patch":
+        sanitized = []
+        for line in lines:
+            sanitized.append(line)
+            if line.strip() == "*** End Patch":
+                break
+        return "\n".join(sanitized)
+    sanitized = []
+    for line in lines:
+        if sanitized and re.fullmatch(r"PATCH(?:_[A-Za-z0-9]+)?", line.strip()):
+            break
+        sanitized.append(line)
+    return "\n".join(sanitized)
 
 
 def repair_add_file_content_lines(patch):
@@ -340,7 +362,7 @@ def unified_add_file_command(patch):
 
 def extract_patch_argument(arguments):
     if is_patch_text(arguments):
-        return arguments
+        return sanitize_patch_text(arguments)
     if isinstance(arguments, dict):
         data = arguments
     elif isinstance(arguments, str):
@@ -353,7 +375,7 @@ def extract_patch_argument(arguments):
     for key in ("patch", "input", "content", "text"):
         value = data.get(key)
         if is_patch_text(value):
-            return value
+            return sanitize_patch_text(value)
     return None
 
 
@@ -364,6 +386,52 @@ def extract_embedded_apply_patch(text):
     if not match:
         return None
     return match.group(0).strip()
+
+
+def extract_embedded_unified_diff(text):
+    if not isinstance(text, str):
+        return None
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("diff --git ") or line.startswith("--- "):
+            start = index
+            break
+    if start is None:
+        return None
+    diff_lines = []
+    saw_header = False
+    saw_hunk = False
+    for line in lines[start:]:
+        if diff_lines and re.fullmatch(r"PATCH(?:_[A-Za-z0-9]+)?", line.strip()):
+            break
+        if line.startswith("diff --git "):
+            if diff_lines and saw_hunk:
+                break
+            diff_lines.append(line)
+            continue
+        if line.startswith("--- ") or line.startswith("+++ "):
+            saw_header = True
+            diff_lines.append(line)
+            continue
+        if line.startswith("@@ "):
+            saw_hunk = True
+            diff_lines.append(line)
+            continue
+        if saw_header and (
+            line.startswith(("+", "-", " "))
+            or line.startswith("\\ No newline at end of file")
+            or line.startswith(("index ", "new file mode ", "deleted file mode "))
+        ):
+            diff_lines.append(line)
+            continue
+        if saw_hunk:
+            break
+        if diff_lines:
+            diff_lines.append(line)
+    if not saw_header or not saw_hunk:
+        return None
+    return sanitize_patch_text("\n".join(diff_lines))
 
 
 def missing_apply_patch_payload_command(original=None):
@@ -904,6 +972,8 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
         if not parsed:
             exec_name = next((candidate for candidate in allowed_names if candidate.rsplit(".", 1)[-1] == "exec_command"), None)
             embedded_patch = extract_embedded_apply_patch(text)
+            if embedded_patch is None:
+                embedded_patch = extract_embedded_unified_diff(text)
             if exec_name and embedded_patch:
                 call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
                 cmd = apply_patch_compat_command(embedded_patch)

@@ -745,6 +745,44 @@ def test_translates_embedded_patch_text_to_exec_command():
     assert "llama-codex apply_patch compatibility" in data["cmd"]
 
 
+def test_translates_embedded_unified_diff_text_to_exec_command():
+    response = {
+        "id": "resp-test",
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": (
+                            "apply patch\n"
+                            "diff --git a/bookmarks/vault.py b/bookmarks/vault.py\n"
+                            "index abc..def 100644\n"
+                            "--- a/bookmarks/vault.py\n"
+                            "+++ b/bookmarks/vault.py\n"
+                            "@@ -1,2 +1,3 @@\n"
+                            " class BookmarkVault:\n"
+                            "-    pass\n"
+                            "+    def __init__(self, path):\n"
+                            "+        self.path = path\n"
+                            "\\ No newline at end of file\n"
+                            "PATCH\n"
+                        ),
+                    }
+                ],
+            }
+        ],
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    item = translated["output"][0]
+    assert item["type"] == "function_call"
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "llama-codex apply_patch compatibility" in data["cmd"]
+    assert "diff --git a/bookmarks/vault.py b/bookmarks/vault.py" in data["cmd"]
+    assert "\nPATCH\n" not in data["cmd"].split("cat >\"$patch_file\"", 1)[-1]
+
+
 def test_force_patch_first_rejects_missing_tool_message():
     response = {
         "id": "resp-test",
@@ -815,5 +853,6 @@ if __name__ == "__main__":
     test_repairs_complete_apply_patch_heredoc_missing_add_prefixes()
     test_repairs_apply_patch_heredoc_missing_end_marker()
     test_translates_embedded_patch_text_to_exec_command()
+    test_translates_embedded_unified_diff_text_to_exec_command()
     test_force_patch_first_rejects_missing_tool_message()
     print("proxy parser tests passed")
