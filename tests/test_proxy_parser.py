@@ -563,6 +563,74 @@ def test_force_patch_first_allows_commands_after_patch_in_same_response():
     assert second["cmd"] == "python3 -m unittest discover -s tests -v"
 
 
+def test_requires_update_patch_after_prior_patch_output():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": (
+                            "apply_patch <<'PATCH'\n"
+                            "*** Begin Patch\n"
+                            "*** Delete File: a.txt\n"
+                            "*** Add File: a.txt\n"
+                            "+new\n"
+                            "*** End Patch\n"
+                            "PATCH"
+                        )
+                    }
+                ),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        require_update_after_patch=True,
+    )
+    data = json.loads(translated["output"][0]["arguments"])
+    assert "rejected full rewrite after a prior patch" in data["cmd"]
+    assert "*** Update File" in data["cmd"]
+
+
+def test_allows_update_patch_after_prior_patch_output():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {
+                        "cmd": (
+                            "apply_patch <<'PATCH'\n"
+                            "*** Begin Patch\n"
+                            "*** Update File: a.txt\n"
+                            "@@\n"
+                            " old\n"
+                            "-bad\n"
+                            "+good\n"
+                            "*** End Patch\n"
+                            "PATCH"
+                        )
+                    }
+                ),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        require_update_after_patch=True,
+    )
+    data = json.loads(translated["output"][0]["arguments"])
+    assert data["cmd"].startswith("apply_patch <<")
+    assert "rejected full rewrite" not in data["cmd"]
+
+
 def test_force_patch_first_rejects_update_hunk_patch():
     response = {
         "output": [
@@ -887,6 +955,8 @@ if __name__ == "__main__":
     test_force_patch_first_rejects_diagnostic_exec_command()
     test_force_patch_first_allows_apply_patch_command()
     test_force_patch_first_allows_commands_after_patch_in_same_response()
+    test_requires_update_patch_after_prior_patch_output()
+    test_allows_update_patch_after_prior_patch_output()
     test_force_patch_first_rejects_update_hunk_patch()
     test_repairs_unprefixed_add_file_lines()
     test_repairs_apply_patch_heredoc_closed_before_end_patch()

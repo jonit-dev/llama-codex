@@ -860,6 +860,46 @@ def patch_first_is_satisfied(arguments):
     return stripped.startswith("apply_patch") or "llama-codex apply_patch compatibility" in cmd
 
 
+def require_update_patch_after_prior_patch(arguments):
+    try:
+        data = json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+    if not isinstance(data, dict):
+        return arguments
+    cmd = data.get("cmd")
+    if not isinstance(cmd, str):
+        return arguments
+    stripped = cmd.lstrip()
+    is_patch_command = stripped.startswith("apply_patch") or "llama-codex apply_patch compatibility" in cmd
+    if not is_patch_command:
+        return arguments
+    if "*** Update File:" in cmd and "llama-codex apply_patch compatibility" not in cmd:
+        return arguments
+    message = (
+        "llama-codex proxy rejected full rewrite after a prior patch: "
+        "the workspace already has implementation changes; use a targeted *** Update File patch against the current file."
+    )
+    example = (
+        "required command shape: apply_patch <<'PATCH'\\n"
+        "*** Begin Patch\\n"
+        "*** Update File: path/to/file\\n"
+        "@@\\n"
+        " unchanged context line\\n"
+        "-old line\\n"
+        "+new line\\n"
+        "*** End Patch\\n"
+        "PATCH"
+    )
+    data["cmd"] = (
+        "printf '%s\\n' "
+        f"{shlex.quote(message)} "
+        f"{shlex.quote(example)} "
+        ">&2; exit 2"
+    )
+    return json.dumps(data)
+
+
 def force_patch_first_missing_tool_command():
     message = (
         "llama-codex proxy rejected forced patch recovery response: "
@@ -967,7 +1007,13 @@ def normalize_response_text(data):
     return data
 
 
-def translate_tool_text_response(data, allowed_names, reject_shell_writes=False, force_patch_first=False):
+def translate_tool_text_response(
+    data,
+    allowed_names,
+    reject_shell_writes=False,
+    force_patch_first=False,
+    require_update_after_patch=False,
+):
     data = normalize_response_text(data)
     translate_apply_patch_objects(data, allowed_names)
     output = data.get("output")
@@ -980,6 +1026,8 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
             if force_patch_first and not patch_first_satisfied:
                 item["arguments"] = force_patch_first_command(item["arguments"])
                 patch_first_satisfied = patch_first_is_satisfied(item["arguments"])
+            if require_update_after_patch:
+                item["arguments"] = require_update_patch_after_prior_patch(item["arguments"])
             continue
         if item.get("type") == "function_call":
             name = item.get("name")
@@ -991,6 +1039,8 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
                 if force_patch_first and not patch_first_satisfied:
                     item["arguments"] = force_patch_first_command(item["arguments"])
                     patch_first_satisfied = patch_first_is_satisfied(item["arguments"])
+                if require_update_after_patch:
+                    item["arguments"] = require_update_patch_after_prior_patch(item["arguments"])
             continue
         if item.get("type") != "message":
             continue
@@ -1011,6 +1061,12 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
                     cmd = force_patch_first_command(json.dumps({"cmd": cmd}))
                     try:
                         cmd = json.loads(cmd)["cmd"]
+                    except (TypeError, json.JSONDecodeError, KeyError):
+                        pass
+                if require_update_after_patch:
+                    guarded = require_update_patch_after_prior_patch(json.dumps({"cmd": cmd}))
+                    try:
+                        cmd = json.loads(guarded)["cmd"]
                     except (TypeError, json.JSONDecodeError, KeyError):
                         pass
                 output[index] = {
@@ -1052,6 +1108,8 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
         if force_patch_first and not patch_first_satisfied:
             arguments = force_patch_first_command(arguments)
             patch_first_satisfied = patch_first_is_satisfied(arguments)
+        if require_update_after_patch:
+            arguments = require_update_patch_after_prior_patch(arguments)
         call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
         output[index] = {
             "id": "fc_" + call_id.removeprefix("call_"),
@@ -1166,6 +1224,7 @@ class Proxy(BaseHTTPRequestHandler):
                 payload_requests_force_patch_first(payload)
                 and not payload_contains_successful_patch_output(payload)
             )
+            require_update_after_patch = payload_contains_successful_patch_output(payload)
             payload["stream"] = False
             tools = payload.get("tools")
             allowed_tool_names = set()
@@ -1189,11 +1248,19 @@ class Proxy(BaseHTTPRequestHandler):
                 allowed_tool_names=allowed_tool_names,
                 stream_response=stream_response,
                 force_patch_first=force_patch_first,
+                require_update_after_patch=require_update_after_patch,
             )
             return
         self.forward(read_json(self))
 
-    def forward(self, payload=None, allowed_tool_names=None, stream_response=False, force_patch_first=False):
+    def forward(
+        self,
+        payload=None,
+        allowed_tool_names=None,
+        stream_response=False,
+        force_patch_first=False,
+        require_update_after_patch=False,
+    ):
         url = self.server.backend.rstrip("/") + self.path
         data = None
         headers = {}
@@ -1213,6 +1280,7 @@ class Proxy(BaseHTTPRequestHandler):
                                 allowed_tool_names,
                                 reject_shell_writes=self.server.reject_shell_writes,
                                 force_patch_first=force_patch_first,
+                                require_update_after_patch=require_update_after_patch,
                             )
                         ).encode("utf-8")
                     except json.JSONDecodeError:
