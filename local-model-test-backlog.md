@@ -114,6 +114,17 @@ run again reached a real implementation plus focused two-failure repair loop
 before exposing these path-normalization issues. Harness stability improved;
 bookmark-vault still needs a clean pass before changing the recommendation.
 
+Latest bookmark-vault harness pass: the proxy removed the non-atomic system
+`patch` fallback after it partially applied a bad unified diff with fuzz and
+left a `.rej`. Forced no-change recovery now releases once the conversation
+contains successful patch output, so verification commands are not falsely
+rejected after a patch. Dirty repair prompting was tightened, and the proxy now
+rejects subsequent full-file rewrites after a prior successful patch, requiring
+targeted `*** Update File` repairs instead. Regression tests cover these paths.
+The benchmark still has not passed: Qwen can reach a near-working package but
+continues to miss or loop on small semantic fixes such as deep-copying nested
+tag lists and matching exact error text.
+
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
 ## Cleanup Findings
