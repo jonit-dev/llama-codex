@@ -523,6 +523,35 @@ def test_force_patch_first_allows_apply_patch_command():
     assert data["cmd"].startswith("apply_patch <<")
 
 
+def test_force_patch_first_allows_commands_after_patch_in_same_response():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {"cmd": "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: a.txt\n+ok\n*** End Patch\nPATCH"}
+                ),
+            },
+            {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": json.dumps({"cmd": "python3 -m unittest discover -s tests -v"}),
+            },
+        ]
+    }
+    translated = proxy.translate_tool_text_response(
+        response,
+        {"exec_command"},
+        reject_shell_writes=True,
+        force_patch_first=True,
+    )
+    first = json.loads(translated["output"][0]["arguments"])
+    second = json.loads(translated["output"][1]["arguments"])
+    assert first["cmd"].startswith("apply_patch <<")
+    assert second["cmd"] == "python3 -m unittest discover -s tests -v"
+
+
 def test_force_patch_first_rejects_update_hunk_patch():
     response = {
         "output": [
@@ -845,6 +874,7 @@ if __name__ == "__main__":
     test_detects_force_patch_first_prompt()
     test_force_patch_first_rejects_diagnostic_exec_command()
     test_force_patch_first_allows_apply_patch_command()
+    test_force_patch_first_allows_commands_after_patch_in_same_response()
     test_force_patch_first_rejects_update_hunk_patch()
     test_repairs_unprefixed_add_file_lines()
     test_repairs_apply_patch_heredoc_closed_before_end_patch()

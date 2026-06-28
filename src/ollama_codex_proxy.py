@@ -846,6 +846,20 @@ def force_patch_first_command(arguments):
     return json.dumps(data)
 
 
+def patch_first_is_satisfied(arguments):
+    try:
+        data = json.loads(arguments)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    cmd = data.get("cmd")
+    if not isinstance(cmd, str):
+        return False
+    stripped = cmd.lstrip()
+    return stripped.startswith("apply_patch") or "llama-codex apply_patch compatibility" in cmd
+
+
 def force_patch_first_missing_tool_command():
     message = (
         "llama-codex proxy rejected forced patch recovery response: "
@@ -944,11 +958,13 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
     output = data.get("output")
     if not isinstance(output, list):
         return data
+    patch_first_satisfied = False
     for index, item in enumerate(output):
         if translate_apply_patch_item(item, allowed_names):
             item["arguments"] = apply_exec_guard(item.get("name"), item["arguments"], reject_shell_writes)
-            if force_patch_first:
+            if force_patch_first and not patch_first_satisfied:
                 item["arguments"] = force_patch_first_command(item["arguments"])
+                patch_first_satisfied = patch_first_is_satisfied(item["arguments"])
             continue
         if item.get("type") == "function_call":
             name = item.get("name")
@@ -957,8 +973,9 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
                 name, arguments = translate_apply_patch_call(name, arguments, allowed_names)
                 item["name"] = name
                 item["arguments"] = apply_exec_guard(name, arguments, reject_shell_writes)
-                if force_patch_first:
+                if force_patch_first and not patch_first_satisfied:
                     item["arguments"] = force_patch_first_command(item["arguments"])
+                    patch_first_satisfied = patch_first_is_satisfied(item["arguments"])
             continue
         if item.get("type") != "message":
             continue
@@ -1017,8 +1034,9 @@ def translate_tool_text_response(data, allowed_names, reject_shell_writes=False,
         name, arguments = parsed
         name, arguments = translate_apply_patch_call(name, arguments, allowed_names)
         arguments = apply_exec_guard(name, arguments, reject_shell_writes)
-        if force_patch_first:
+        if force_patch_first and not patch_first_satisfied:
             arguments = force_patch_first_command(arguments)
+            patch_first_satisfied = patch_first_is_satisfied(arguments)
         call_id = "call_" + item.get("id", data.get("id", "ollama")).replace("-", "_")
         output[index] = {
             "id": "fc_" + call_id.removeprefix("call_"),
