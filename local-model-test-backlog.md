@@ -104,6 +104,16 @@ with missing `+` prefixes after `*** Add File`, and heredocs missing the final
 stability progress, but the benchmark has still not produced an independently
 passing bookmark-vault run through `llama-codex`.
 
+Additional patch-channel hardening: the proxy now tries `git apply -p0` before
+falling back to `patch`, and normalizes unified diff headers that contain
+absolute paths under the current workspace back to relative paths. These fixes
+target two fresh Qwen failure modes observed in bookmark-vault: `--- bookmarks/...`
+diffs were treated as `vault.py` by default `git apply`, and absolute
+`--- /home/.../bookmarks/vault.py` headers were rejected as unsafe. The latest
+run again reached a real implementation plus focused two-failure repair loop
+before exposing these path-normalization issues. Harness stability improved;
+bookmark-vault still needs a clean pass before changing the recommendation.
+
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
 ## Cleanup Findings
