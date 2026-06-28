@@ -992,7 +992,7 @@ NOCHANGE
 elif [[ "${no_workspace_changes}" == true ]]; then cat <<'NOCHANGE_WITH_DIRTY_WORKTREE'
 Premature stop detected: the previous attempt made no additional workspace file changes before verification.
 The workspace already contains implementation changes. Use the verification output and current workspace context to continue the repair loop.
-You may run the verification command or inspect the changed implementation before patching, but do not answer in prose only.
+Begin with a targeted apply_patch Update File edit against the current changed implementation. Do not rerun verification or inspect files before making that repair edit.
 NOCHANGE_WITH_DIRTY_WORKTREE
 fi)
 
@@ -1004,7 +1004,7 @@ Do not use Codex's native apply_patch tool. Use exec_command with apply_patch as
 Do not run rm, unlink, touch, sed -i, Python file writers, cat heredocs, tee, or shell redirects for source edits.
 $(if [[ "${has_code_changes}" == true ]]; then cat <<'DIRTY_REPAIR'
 The workspace already has implementation changes. Do not replay the existing large diff or replace the file from scratch unless the current file is unrecoverable.
-Prefer a targeted Update File patch against the current implementation:
+Your next command should be a targeted Update File patch against the current implementation:
 apply_patch <<'PATCH'
 *** Begin Patch
 *** Update File: path/to/file
@@ -1015,6 +1015,7 @@ apply_patch <<'PATCH'
 *** End Patch
 PATCH
 Every unchanged context line in an Update hunk must start with one space.
+After that patch command completes, run the verification command.
 DIRTY_REPAIR
 else cat <<'CLEAN_REPAIR'
 Use full-file replacement for stub, missing, or mostly unchanged implementation files. Do not use Update File hunks in this recovery turn.
