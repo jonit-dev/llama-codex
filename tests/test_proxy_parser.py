@@ -270,6 +270,24 @@ def test_translates_native_apply_patch_call_to_exec_command():
     assert "*** Add File: a.txt" in data["cmd"]
 
 
+def test_malformed_native_apply_patch_call_becomes_exec_diagnostic():
+    response = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "apply_patch",
+                "arguments": json.dumps({"cmd": "not a patch"}),
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    item = translated["output"][0]
+    assert item["name"] == "exec_command"
+    data = json.loads(item["arguments"])
+    assert "rejected native apply_patch call" in data["cmd"]
+    assert "not a patch" in data["cmd"]
+
+
 def test_translates_text_apply_patch_call_to_exec_command():
     response = {
         "id": "resp-test",
@@ -393,6 +411,31 @@ def test_translates_nested_apply_patch_object():
     assert "*** Add File: a.txt" in data["cmd"]
 
 
+def test_malformed_nested_apply_patch_object_becomes_exec_diagnostic():
+    response = {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "call": {
+                            "name": "apply_patch",
+                            "arguments": {"cmd": "still not a patch"},
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+    translated = proxy.translate_tool_text_response(response, {"exec_command"}, reject_shell_writes=True)
+    call = translated["output"][0]["content"][0]["call"]
+    assert call["name"] == "exec_command"
+    data = json.loads(call["arguments"])
+    assert "rejected native apply_patch call" in data["cmd"]
+    assert "still not a patch" in data["cmd"]
+
+
 def test_translates_premature_prose_to_exec_diagnostic():
     response = {
         "id": "resp-test",
@@ -431,7 +474,7 @@ def test_does_not_translate_completion_prose_to_exec_diagnostic():
 
 def test_detects_force_patch_first_prompt():
     assert proxy.payload_requests_force_patch_first(
-        {"input": "Your first command in the next turn must be an apply_patch heredoc."}
+        {"input": "Your first tool call in the next turn must be exec_command."}
     )
     assert not proxy.payload_requests_force_patch_first({"input": "Read files, then patch."})
 
@@ -551,6 +594,101 @@ def test_repairs_apply_patch_heredoc_closed_before_end_patch():
     assert "PATCH\n*** End Patch" not in data["cmd"]
 
 
+def test_rewrites_wrapped_unified_diff_heredoc_to_compat_command():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps(
+            {
+                "cmd": (
+                    "apply_patch <<'PATCH'\n"
+                    "*** Begin Patch\n"
+                    "--- a.py\n"
+                    "+++ a.py\n"
+                    "@@ -1 +1 @@\n"
+                    "-old\n"
+                    "+new\n"
+                    "*** End Patch\n"
+                    "PATCH"
+                )
+            }
+        ),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "llama-codex apply_patch compatibility" in data["cmd"]
+    assert "git apply --recount" in data["cmd"]
+    assert "grep -q '^\\*\\*\\* Begin Patch'" in data["cmd"]
+    assert "grep -qi '^Invalid patch'" in data["cmd"]
+    assert "*** Begin Patch" not in data["cmd"].split("cat >\"$patch_file\"", 1)[-1]
+
+
+def test_repairs_malformed_wrapped_unified_diff_header():
+    command = proxy.apply_patch_compat_command(
+        "*** Begin Patch\n"
+        "-- a.py\n"
+        "++ a.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch"
+    )
+    assert "--- a.py" in command
+    assert "+++ a.py" in command
+    assert "-- a.py" not in command.splitlines()
+
+
+def test_repairs_complete_apply_patch_heredoc_missing_add_prefixes():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps(
+            {
+                "cmd": (
+                    "apply_patch <<'PATCH'\n"
+                    "*** Begin Patch\n"
+                    "*** Delete File: a.py\n"
+                    "*** Add File: a.py\n"
+                    "import json\n"
+                    "\n"
+                    "print('ok')\n"
+                    "*** End Patch\n"
+                    "PATCH"
+                )
+            }
+        ),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "+import json" in data["cmd"]
+    assert "+print('ok')" in data["cmd"]
+    assert "\nimport json\n" not in data["cmd"]
+
+
+def test_repairs_apply_patch_heredoc_missing_end_marker():
+    arguments = proxy.apply_exec_guard(
+        "exec_command",
+        json.dumps(
+            {
+                "cmd": (
+                    "apply_patch <<'PATCH'\n"
+                    "*** Begin Patch\n"
+                    "*** Delete File: a.py\n"
+                    "*** Add File: a.py\n"
+                    "import json\n"
+                    "print('ok')\n"
+                    "PATCH\n"
+                    "PATCH"
+                )
+            }
+        ),
+        True,
+    )
+    data = json.loads(arguments)
+    assert "+import json" in data["cmd"]
+    assert "+print('ok')" in data["cmd"]
+    assert "*** End Patch\n" in data["cmd"]
+    assert data["cmd"].count("\nPATCH") == 1
+
+
 def test_translates_embedded_patch_text_to_exec_command():
     response = {
         "id": "resp-test",
@@ -634,12 +772,14 @@ if __name__ == "__main__":
     test_rejects_apply_patch_file_patch_flags_with_non_patch_payload()
     test_rejects_malformed_apply_patch_shell_command_with_guidance()
     test_translates_native_apply_patch_call_to_exec_command()
+    test_malformed_native_apply_patch_call_becomes_exec_diagnostic()
     test_translates_text_apply_patch_call_to_exec_command()
     test_translates_custom_apply_patch_input_to_exec_command()
     test_translates_unified_diff_apply_patch_to_compat_command()
     test_repairs_shorthand_apply_patch_header()
     test_shorthand_patch_rejects_top_level_module_shadowing_package()
     test_translates_nested_apply_patch_object()
+    test_malformed_nested_apply_patch_object_becomes_exec_diagnostic()
     test_translates_premature_prose_to_exec_diagnostic()
     test_does_not_translate_completion_prose_to_exec_diagnostic()
     test_detects_force_patch_first_prompt()
@@ -648,6 +788,10 @@ if __name__ == "__main__":
     test_force_patch_first_rejects_update_hunk_patch()
     test_repairs_unprefixed_add_file_lines()
     test_repairs_apply_patch_heredoc_closed_before_end_patch()
+    test_rewrites_wrapped_unified_diff_heredoc_to_compat_command()
+    test_repairs_malformed_wrapped_unified_diff_header()
+    test_repairs_complete_apply_patch_heredoc_missing_add_prefixes()
+    test_repairs_apply_patch_heredoc_missing_end_marker()
     test_translates_embedded_patch_text_to_exec_command()
     test_force_patch_first_rejects_missing_tool_message()
     print("proxy parser tests passed")

@@ -92,6 +92,18 @@ Current conclusion: these patches materially improve recovery, but
 `llama-codex` remains below `aider diff-fenced` as the default greenfield
 harness for this Qwen model.
 
+Follow-up harness pass: `llama-codex` now isolates local Codex config by
+default with `mcp_servers={}`, `plugins={}`, and `marketplaces={}`, which
+prevented inherited Playwright MCP startup during the bookmark-vault CLI
+benchmark. Verified runs now also have `LLAMA_CODEX_ATTEMPT_TIMEOUT_SECONDS`
+so a prose-only or no-edit Codex attempt is terminated and retried instead of
+hanging. The proxy gained fail-closed native `apply_patch` diagnostics, repair
+for wrapped unified diffs, malformed `--/++` diff headers, complete heredocs
+with missing `+` prefixes after `*** Add File`, and heredocs missing the final
+`*** End Patch`. Regression tests cover these cases. This is meaningful harness
+stability progress, but the benchmark has still not produced an independently
+passing bookmark-vault run through `llama-codex`.
+
 New candidates should run the hard note-service benchmark for acceptance. Medium remains useful for wrapper debugging or quick smoke tests, but it is not enough to qualify a model for repo work.
 
 ## Cleanup Findings

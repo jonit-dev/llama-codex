@@ -92,6 +92,8 @@ reject_shell_writes="${LLAMA_CODEX_REJECT_SHELL_WRITES:-1}"
 verify_command="${LLAMA_CODEX_VERIFY_COMMAND:-}"
 verify_retries="${LLAMA_CODEX_VERIFY_RETRIES:-0}"
 retry_context_bytes="${LLAMA_CODEX_RETRY_CONTEXT_BYTES:-45000}"
+attempt_timeout_seconds="${LLAMA_CODEX_ATTEMPT_TIMEOUT_SECONDS:-900}"
+isolate_codex_config="${LLAMA_CODEX_ISOLATE_CODEX_CONFIG:-1}"
 restart_proxy=false
 stop_proxy=false
 action="run"
@@ -209,6 +211,8 @@ while (($#)); do
       echo "verify_command=${verify_command}"
       echo "verify_retries=${verify_retries}"
       echo "retry_context_bytes=${retry_context_bytes}"
+      echo "attempt_timeout_seconds=${attempt_timeout_seconds}"
+      echo "isolate_codex_config=${isolate_codex_config}"
       echo "base_instructions_source=${base_instructions_source}"
       echo "env_file=${env_file}"
       echo "model_catalog=${model_catalog}"
@@ -268,6 +272,8 @@ Environment:
   LLAMA_CODEX_OLLAMA_MAX_LOADED_MODELS
   LLAMA_CODEX_TOOL_PROFILE       Defaults to lean.
   LLAMA_CODEX_DENY_TOOL_PATTERN
+  LLAMA_CODEX_ATTEMPT_TIMEOUT_SECONDS
+  LLAMA_CODEX_ISOLATE_CODEX_CONFIG  Defaults to 1; hides inherited MCP/plugin config.
   LLAMA_CODEX_BASE_INSTRUCTIONS  Overrides default local-agent steering.
   LLAMA_CODEX_LOG_DIR
   LLAMA_CODEX_CACHE_DIR
@@ -649,6 +655,16 @@ doctor() {
 }
 
 run_codex_once() {
+  local local_config_args=()
+  case "${isolate_codex_config}" in
+    1|true|TRUE|yes|YES|on|ON)
+      local_config_args+=(
+        -c 'mcp_servers={}'
+        -c 'plugins={}'
+        -c 'marketplaces={}'
+      )
+      ;;
+  esac
   codex \
     -c "model=\"${model}\"" \
     -c 'model_provider="ollama-launch"' \
@@ -656,7 +672,37 @@ run_codex_once() {
     -c 'model_providers.ollama-launch.name="Ollama"' \
     -c "model_providers.ollama-launch.base_url=\"${proxy_url}/v1/\"" \
     -c 'model_providers.ollama-launch.wire_api="responses"' \
+    "${local_config_args[@]}" \
     "${args[@]}"
+}
+
+run_codex_attempt() {
+  if [[ "${attempt_timeout_seconds}" =~ ^[0-9]+$ ]] && ((attempt_timeout_seconds > 0)); then
+    run_codex_once &
+    local pid=$!
+    (
+      sleep "${attempt_timeout_seconds}"
+      if kill -0 "${pid}" >/dev/null 2>&1; then
+        echo "llama-codex: codex attempt exceeded ${attempt_timeout_seconds}s; terminating attempt" >&2
+        kill "${pid}" >/dev/null 2>&1 || true
+        sleep 2
+        if kill -0 "${pid}" >/dev/null 2>&1; then
+          kill -TERM "-${pid}" >/dev/null 2>&1 || true
+          kill -KILL "${pid}" >/dev/null 2>&1 || true
+        fi
+      fi
+    ) &
+    local watchdog_pid=$!
+    wait "${pid}"
+    local rc=$?
+    kill "${watchdog_pid}" >/dev/null 2>&1 || true
+    wait "${watchdog_pid}" >/dev/null 2>&1 || true
+    if [[ "${rc}" -eq 143 || "${rc}" -eq 137 ]]; then
+      return 124
+    fi
+    return "${rc}"
+  fi
+  run_codex_once
 }
 
 append_retry_instruction() {
@@ -829,8 +875,39 @@ print("\n".join(lines))
 PY
 }
 
+workspace_has_code_changes() {
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if ! git diff --quiet -- . ':!**/__pycache__/**' ':!.pytest_cache/**'; then
+      return 0
+    fi
+    if ! git diff --cached --quiet -- . ':!**/__pycache__/**' ':!.pytest_cache/**'; then
+      return 0
+    fi
+    while IFS= read -r path; do
+      case "${path}" in
+        __pycache__/*|*/__pycache__/*|.pytest_cache/*|*/.pytest_cache/*)
+          continue
+          ;;
+      esac
+      return 0
+    done < <(git ls-files --others --exclude-standard)
+    return 1
+  fi
+  return 1
+}
+
 run_with_optional_verification() {
   if [[ -z "${verify_command}" ]]; then
+    local local_config_args=()
+    case "${isolate_codex_config}" in
+      1|true|TRUE|yes|YES|on|ON)
+        local_config_args+=(
+          -c 'mcp_servers={}'
+          -c 'plugins={}'
+          -c 'marketplaces={}'
+        )
+        ;;
+    esac
     exec codex \
       -c "model=\"${model}\"" \
       -c 'model_provider="ollama-launch"' \
@@ -838,6 +915,7 @@ run_with_optional_verification() {
       -c 'model_providers.ollama-launch.name="Ollama"' \
       -c "model_providers.ollama-launch.base_url=\"${proxy_url}/v1/\"" \
       -c 'model_providers.ollama-launch.wire_api="responses"' \
+      "${local_config_args[@]}" \
       "${args[@]}"
   fi
 
@@ -848,6 +926,7 @@ run_with_optional_verification() {
   local before_snapshot
   local after_snapshot
   local no_workspace_changes=false
+  local has_code_changes=false
   verify_output="$(mktemp)"
   clean_verify_output="$(mktemp)"
   before_snapshot="$(mktemp)"
@@ -855,7 +934,7 @@ run_with_optional_verification() {
   while :; do
     snapshot_workspace "${before_snapshot}"
     set +e
-    run_codex_once
+    run_codex_attempt
     local codex_rc=$?
     snapshot_workspace "${after_snapshot}"
     bash -lc "${verify_command}" >"${verify_output}" 2>&1
@@ -865,6 +944,11 @@ run_with_optional_verification() {
       no_workspace_changes=true
     else
       no_workspace_changes=false
+    fi
+    if workspace_has_code_changes; then
+      has_code_changes=true
+    else
+      has_code_changes=false
     fi
     sed -r 's/\x1B\[[0-9;]*[mK]//g' "${verify_output}" >"${clean_verify_output}"
 
@@ -897,19 +981,42 @@ $(sed -n '1,50p' "${clean_verify_output}")
 
 $(retry_context_snapshot)
 
-$(if [[ "${no_workspace_changes}" == true ]]; then cat <<'NOCHANGE'
+$(if [[ "${no_workspace_changes}" == true && "${has_code_changes}" == false ]]; then cat <<'NOCHANGE'
 Premature stop detected: the previous attempt made no workspace file changes before verification.
 The current workspace context is included above. Do not re-read files.
 Do not explain the fix first.
-Your first command in the next turn must be an apply_patch heredoc that changes an implementation file.
+Your first tool call in the next turn must be exec_command.
+That exec_command cmd must be a shell heredoc beginning exactly with: apply_patch <<'PATCH'
+Do not use Codex's native apply_patch tool.
 NOCHANGE
+elif [[ "${no_workspace_changes}" == true ]]; then cat <<'NOCHANGE_WITH_DIRTY_WORKTREE'
+Premature stop detected: the previous attempt made no additional workspace file changes before verification.
+The workspace already contains implementation changes. Use the verification output and current workspace context to continue the repair loop.
+You may run the verification command or inspect the changed implementation before patching, but do not answer in prose only.
+NOCHANGE_WITH_DIRTY_WORKTREE
 fi)
 
 Continue from the current files. Do not restart from scratch.
 Do not answer in prose or say what you will do next.
 Your next assistant turn must call exec_command.
-Do not put exec_command(...) text inside the shell command; the shell command must be plain shell such as apply_patch, npm test, sed -n, or cat.
+Do not put exec_command(...) text inside the shell command; exec_command cmd must be plain shell such as apply_patch, npm test, sed -n, or cat.
+Do not use Codex's native apply_patch tool. Use exec_command with apply_patch as shell text inside cmd.
 Do not run rm, unlink, touch, sed -i, Python file writers, cat heredocs, tee, or shell redirects for source edits.
+$(if [[ "${has_code_changes}" == true ]]; then cat <<'DIRTY_REPAIR'
+The workspace already has implementation changes. Do not replay the existing large diff or replace the file from scratch unless the current file is unrecoverable.
+Prefer a targeted Update File patch against the current implementation:
+apply_patch <<'PATCH'
+*** Begin Patch
+*** Update File: path/to/file
+@@
+ unchanged context line
+-old line
++new line
+*** End Patch
+PATCH
+Every unchanged context line in an Update hunk must start with one space.
+DIRTY_REPAIR
+else cat <<'CLEAN_REPAIR'
 Use full-file replacement for stub, missing, or mostly unchanged implementation files. Do not use Update File hunks in this recovery turn.
 Use exec_command to run apply_patch with this exact shape:
 apply_patch <<'PATCH'
@@ -920,6 +1027,8 @@ apply_patch <<'PATCH'
 +full corrected file line 2
 *** End Patch
 PATCH
+CLEAN_REPAIR
+fi)
 Do not use apply_patch --file or --patch flags.
 Edit the implementation files, then run the verification command.
 Continue until verification passes.
