@@ -916,6 +916,49 @@ def test_force_patch_first_rejects_missing_tool_message():
     assert "apply_patch" in data["cmd"]
 
 
+def test_folds_instructions_into_leading_developer_message():
+    # llama.cpp's Responses -> chat conversion emits both `instructions` and a leading
+    # developer message as system messages, which the Qwen3.8 template rejects with
+    # "System message must be at the beginning". Fold the instructions into that message.
+    payload = {
+        "instructions": "system text",
+        "input": [
+            {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "dev text"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        ],
+    }
+    folded = proxy.fold_instructions_into_leading_message(payload)
+    assert "instructions" not in folded
+    assert folded["input"][0]["role"] == "developer"
+    assert folded["input"][0]["content"][0]["text"] == "system text"
+    assert folded["input"][0]["content"][1]["text"] == "dev text"
+    assert folded["input"][1]["role"] == "user"
+
+
+def test_folds_instructions_into_leading_system_message_string_content():
+    payload = {"instructions": "system text", "input": [{"type": "message", "role": "system", "content": "dev text"}]}
+    folded = proxy.fold_instructions_into_leading_message(payload)
+    assert "instructions" not in folded
+    assert folded["input"][0]["content"] == "system text\n\ndev text"
+
+
+def test_leaves_payload_without_leading_system_message_alone():
+    payload = {
+        "instructions": "system text",
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+    }
+    folded = proxy.fold_instructions_into_leading_message(payload)
+    assert folded["instructions"] == "system text"
+    assert folded["input"][0]["role"] == "user"
+
+
+def test_leaves_payload_without_instructions_alone():
+    payload = {"input": [{"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "d"}]}]}
+    folded = proxy.fold_instructions_into_leading_message(payload)
+    assert folded["input"][0]["role"] == "developer"
+    assert folded["input"][0]["content"][0]["text"] == "d"
+
+
 if __name__ == "__main__":
     test_parse_qwen_tool_call_suffix()
     test_ignores_disallowed_tool()
@@ -968,4 +1011,8 @@ if __name__ == "__main__":
     test_translates_embedded_patch_text_to_exec_command()
     test_translates_embedded_unified_diff_text_to_exec_command()
     test_force_patch_first_rejects_missing_tool_message()
+    test_folds_instructions_into_leading_developer_message()
+    test_folds_instructions_into_leading_system_message_string_content()
+    test_leaves_payload_without_leading_system_message_alone()
+    test_leaves_payload_without_instructions_alone()
     print("proxy parser tests passed")
